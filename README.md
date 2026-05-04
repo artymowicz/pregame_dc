@@ -9,7 +9,7 @@ test calibration well within ±2σ.
 
 ## Algorithm description
 
-For a given game, let $p_1,...,p_24$ be the best ask prices for YES and NO tokens of the 12 markets at t minutes before kickoff (default t=10). Using a dataset of ~2200 games, computes the top k (default k=3) principal eigenvectors $v_1,...,v_k$. Then trains a simple linear regression of the outcome probability of the 12 markets as linear functions full price vector projected onto the top k principal eigenvectors.
+For a given game, let $p_1,...,p_{24}$ be the best ask prices for YES and NO tokens of the 12 markets at t minutes before kickoff (default t=10). Using a dataset of ~2200 games, computes the top k (default k=3) principal eigenvectors $v_1,...,v_k$. Then trains a simple linear regression of the outcome probability of the 12 markets as linear functions full price vector projected onto the top k principal eigenvectors.
 
 The live bot implements the following strategy: at t minutes before kickoff, compute the predicted probabilities. For a chosen set of markets (default = moneyline only, I think), if the predicted probability is greater than the best ask price + threshold (default = 4 or 5 cents, I think), place a buy order (FOK) for that token.
 
