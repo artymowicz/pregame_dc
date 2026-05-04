@@ -17,9 +17,10 @@ dependencies = [
     "py-order-utils",
     "poly-eip712-structs",
     "eth-utils",
-    # Pipeline-only deps; not used at inference but imported by the
-    # raw-per_game_data rebuild scripts.
+    # Used by data_collection/ (raw-input → per_game_data step). Not needed
+    # at inference time but bundled for self-containedness.
     "h5py",
+    "httpx",
 ]
 
 [build-system]
@@ -27,4 +28,4 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["pregame_pca*"]
+include = ["pregame_pca*", "data_collection*"]

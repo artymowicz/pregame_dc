@@ -20,5 +20,9 @@ data/telonex/games.csv
 data/telonex/metadata/
 data/telonex/cache/
 
+# Raw WebSocket logs and discovered-markets CSV — produced by data_collection/.
+data/raw_ws_logs/
+data_collection/markets/
+
 # Local rebuild outputs.
 /tmp_*

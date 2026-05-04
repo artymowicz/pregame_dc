@@ -35,7 +35,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from pregame_pca.pipelines.filtering import filter_self_collected
+from data_collection.self_collected.filtering import filter_self_collected
 from pregame_pca.polymarket.sdk import MarketTracker
 from pregame_pca.polymarket.soccer import SPORTS_TYPE_MAP, parse_game_slug as _parse_game_slug
 

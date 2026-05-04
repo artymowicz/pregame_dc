@@ -128,11 +128,32 @@ python -m pregame_pca.pipelines.build_labeled_dataset \
     --source telonex --output data/labeled/telonex_dataset.parquet
 ```
 
-To rebuild raw per_game_data:
-- `pregame_pca.pipelines.self_collected.build_dataset` — needs raw `.self_collected` WS log files
-  (not shipped; ~50 GB).
-- `pregame_pca.pipelines.telonex.build_dataset` — needs `TELONEX_API_KEY`
-  in `.env` and re-downloads quote files (slow; days for full backhaul).
+To rebuild raw per_game_data, see the [Collecting raw data](#collecting-raw-data) section below.
+
+## Collecting raw data
+
+The `data_collection/` subpackage owns everything between live external
+sources and `data/{self_collected,telonex}/per_game_data/`:
+
+```bash
+# Discover today's soccer markets (writes data_collection/markets/soccer.csv)
+python -m data_collection.discover_markets
+
+# Long-running WebSocket logger that writes raw HDF5 events to data/raw_ws_logs/
+# (re-runs market discovery every hour; soccer-only).
+python -m data_collection.ws_logger
+
+# Turn raw .h5 logs into per-game parquets at data/self_collected/per_game_data/
+python -m data_collection.self_collected.build_dataset
+
+# Pull quote data from the Telonex API (needs TELONEX_API_KEY in .env) and
+# write per-game parquets at data/telonex/per_game_data/.
+python -m data_collection.telonex.build_dataset
+```
+
+Once `data/{self_collected,telonex}/per_game_data/` are populated, run
+`pregame_pca.pipelines.build_labeled_dataset` (above) to regenerate the
+labeled parquets.
 
 ## Models
 

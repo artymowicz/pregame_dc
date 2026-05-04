@@ -47,6 +47,11 @@ ORDERS_SUMMARY  = LOGS_DIR / "orders_summary.jsonl"
 ORDERS_RESOLVED = LOGS_DIR / "orders_summary_resolved.jsonl"
 STATE_FILE      = LOGS_DIR / "state.json"
 
+# ---- data_collection paths ---------------------------------------
+RAW_WS_LOGS     = DATA_DIR / "raw_ws_logs"
+MARKETS_DIR     = PACKAGE_ROOT / "data_collection" / "markets"
+MARKETS_CSV     = MARKETS_DIR / "soccer.csv"
+
 
 def source_games_csv(source: str) -> Path:
     if source == "self_collected":

@@ -48,7 +48,7 @@ if project_root not in sys.path:
 
 from pregame_pca.polymarket.soccer import classify_market_type, parse_game_date_slug
 
-from pregame_pca.pipelines.telonex.client import TelonexError, download_quotes
+from data_collection.telonex.client import TelonexError, download_quotes
 
 GAMMA_API = "https://gamma-api.polymarket.com"
 
