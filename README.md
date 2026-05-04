@@ -15,7 +15,8 @@ The live bot implements the following strategy: at t minutes before kickoff, com
 
 ## Data sources
 
-Train set: ~2200 games from [telonex]([url](https://telonex.io/)). 
+Train set: ~2200 games from telonex.io
+
 Val set: ~410 games self-collected using the included script data_collection/ws_logger.py
 
 Both datasets have the full timeseries of all 24 best asks for t=-30 minutes to t=+180 minutes relative to kickoff (although we only use the pregame part for this project)
