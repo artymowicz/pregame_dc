@@ -1,0 +1,30 @@
+[project]
+name = "pregame_pca"
+version = "0.1.0"
+description = "Rank-3 PCR pregame predictor + live Polymarket bot for soccer 12-market baskets"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "pandas",
+    "pyarrow",
+    "matplotlib",
+    "tqdm",
+    "requests",
+    "websockets",
+    "aiohttp",
+    "python-dotenv",
+    "py-clob-client",
+    "py-order-utils",
+    "poly-eip712-structs",
+    "eth-utils",
+    # Pipeline-only deps; not used at inference but imported by the
+    # raw-per_game_data rebuild scripts.
+    "h5py",
+]
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pregame_pca*"]

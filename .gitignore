@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.venv/
+.env
+logs/
+plots/
+*.egg-info/
+build/
+dist/
+.DS_Store
+
+# Per-game data and games manifests live outside git: too large for GitHub
+# (~7.5 GB total). To rebuild the labeled parquets you need to obtain these
+# out-of-band or regenerate them from raw inputs (see README "Rebuilding
+# datasets from scratch").
+data/self_collected/per_game_data/
+data/self_collected/games.csv
+data/telonex/per_game_data/
+data/telonex/games.csv
+data/telonex/metadata/
+data/telonex/cache/
+
+# Local rebuild outputs.
+/tmp_*
