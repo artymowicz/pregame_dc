@@ -1,14 +1,26 @@
 # pregame_pca
 
-A rank-3 PCR (Principal Components Regression) predictor for the 12 pregame
-soccer markets that Polymarket lists per game (moneyline / spread / totals /
-BTTS), plus a live trading bot that fires FOK buys when the model's
-prediction exceeds the current ask by a configurable threshold.
+A rank-3 PCR (Principal Components Regression) predictor for the outcomes of a set of 12 soccer game-related Polymarket markets (3 moneyline + 4 spread + 4 totals + 1 both teams to score), plus a live trading bot that implements a simple threshold-based trading strategy using this signal. 
 
-The model is fit on z-scored ask vectors from ~2,200 telonex games and
-evaluated out-of-sample on ~410 self_collected games (held out by game identity). At
+The model is fit on z-scored ask vectors from ~2,200 games and
+evaluated out-of-sample on ~410 games (held out by game identity). At
 **t = −10 min, threshold 0.05** the moneyline edge is +13¢/share with the
 test calibration well within ±2σ.
+
+## Algorithm description
+
+For a given game, let $p_1,...,p_24$ be the best ask prices for YES and NO tokens of the 12 markets at t minutes before kickoff (default t=10). Using a dataset of ~2200 games, computes the top k (default k=3) principal eigenvectors $v_1,...,v_k$. Then trains a simple linear regression of the outcome probability of the 12 markets as linear functions full price vector projected onto the top k principal eigenvectors.
+
+The live bot implements the following strategy: at t minutes before kickoff, compute the predicted probabilities. For a chosen set of markets (default = moneyline only, I think), if the predicted probability is greater than the best ask price + threshold (default = 4 or 5 cents, I think), place a buy order (FOK) for that token.
+
+## Data sources
+
+Train set: ~2200 games from [telonex]([url](https://telonex.io/)). 
+Val set: ~410 games self-collected using the included script data_collection/ws_logger.py
+
+Both datasets have the full timeseries of all 24 best asks for t=-30 minutes to t=+180 minutes relative to kickoff (although we only use the pregame part for this project)
+
+**Data quality:** Self-collected data appears to be of good quality while telonex data has some issues, making it unreliable for validation/backtesting. This is why we use it only to train.
 
 ## Quickstart
 
