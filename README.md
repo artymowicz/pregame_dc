@@ -143,15 +143,25 @@ python -m data_collection.discover_markets
 # (re-runs market discovery every hour; soccer-only).
 python -m data_collection.ws_logger
 
+# One-time: download the Telonex market roster (~600 MB, anonymous endpoint).
+# Required by data_collection.telonex.build_dataset below.
+python -m data_collection.telonex.fetch_metadata
+
 # Turn raw .h5 logs into per-game parquets at data/self_collected/per_game_data/
 python -m data_collection.self_collected.build_dataset
 
 # Pull quote data from the Telonex API (needs TELONEX_API_KEY in .env) and
 # write per-game parquets at data/telonex/per_game_data/.
 python -m data_collection.telonex.build_dataset
+
+# Fetch resolved-market outcomes from Gamma into data/outcomes.parquet.
+# Reads market_ids from data/{self_collected,telonex}/games.csv (written by the
+# build_dataset scripts above). Resumable; only fetches new/unresolved markets.
+python -m data_collection.fetch_outcomes
 ```
 
-Once `data/{self_collected,telonex}/per_game_data/` are populated, run
+Once `data/{self_collected,telonex}/per_game_data/` are populated and
+`data/outcomes.parquet` covers their markets, run
 `pregame_pca.pipelines.build_labeled_dataset` (above) to regenerate the
 labeled parquets.
 
