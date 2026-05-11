@@ -1,7 +1,9 @@
 """Pregame PCA live trading bot.
 
 At t = game_start - 25min, the bot:
-  1. REST-fetches the top-of-book ask for each of the 24 canonical tokens.
+  1. Reads top-of-book asks for the 24 canonical tokens from
+     MarketTracker (an in-memory book reconstructed from the long-lived
+     market WS subscription set up at discovery time; see fire_for_game).
   2. Computes rank-3 PCR predictions using saved (mu, sd_safe, beta_K).
   3. For each moneyline (slots 0/1/2 + NO sides) and totals (7/8/9/10 + NO)
      where 0.01 <= ask <= 0.99 AND pred - ask > 0.05, places a FOK buy of
@@ -215,10 +217,21 @@ class Model:
         self.t_target = float(z["T_TARGET"])
         self.k = int(z["K"])
         self.train_n = int(z["train_n"])
+        # Optional: impute-only variant ships impute_values (24,). When
+        # present, ask cells equal to 1.0 (MarketTracker's "no book" sentinel)
+        # are replaced with the corresponding training-set column mean before
+        # standardising. Older baseline npz files have no such key and fall
+        # back to feeding 1.0 sentinels through unchanged.
+        self.impute_values = (
+            z["impute_values"] if "impute_values" in z.files else None
+        )
 
     def predict(self, asks_24: np.ndarray) -> np.ndarray:
         """asks_24: (24,) raw ask vector in canonical order. Returns (24,) preds."""
-        z = (asks_24 - self.mu) / self.sd_safe
+        x = asks_24
+        if self.impute_values is not None:
+            x = np.where(x == 1.0, self.impute_values, x)
+        z = (x - self.mu) / self.sd_safe
         feats = np.concatenate([z, [1.0]])
         return self.beta_K @ feats
 

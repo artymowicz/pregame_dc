@@ -38,6 +38,8 @@ TELONEX_KICKOFF_CACHE = TELONEX_DIR / "cache" / "kickoff_times.json"
 MODELS_DIR      = PACKAGE_ROOT / "pregame_pca" / "models"
 MODEL_T_25MIN   = MODELS_DIR / "rank3_t-25min.npz"
 MODEL_T_10MIN   = MODELS_DIR / "rank3_t-10min.npz"
+MODEL_T_25MIN_IMP = MODELS_DIR / "rank3_t-25min_imp.npz"
+MODEL_T_10MIN_IMP = MODELS_DIR / "rank3_t-10min_imp.npz"
 
 # ---- runtime / live bot logs --------------------------------------
 LOGS_DIR        = PACKAGE_ROOT / "logs"
