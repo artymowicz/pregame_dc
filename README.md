@@ -52,6 +52,7 @@ pregame_pca/
         resolve_outcomes.py      post-game backfill of outcomes/PnL
     pipelines/                   data builders
         build_labeled_dataset.py source-parameterised labeled-dataset builder
+        build_telonex_games_csv.py reconstructs data/telonex/games.csv
         helpers.py               pivot, slot mapping, outcome lookup
         self_collected/                      raw self_collected WS log → per-game per_game_data
         telonex/                 Telonex API → per-game per_game_data
@@ -68,10 +69,13 @@ data/
         self_collected_dataset.parquet       ~9 MB eval pool (461 games)
     self_collected/per_game_data/                ~5.5 GB per-game per_game_data (1,115 files)
     telonex/per_game_data/           ~1.9 GB per-game per_game_data (2,627 files)
+    telonex/cache/
+        kickoff_times.json       game_date_slug → kickoff epoch (shipped, warm-start)
+        market_ids.json          condition_id → Gamma numeric market_id (shipped, warm-start)
     outcomes.parquet             game-market resolution table
 
 logs/                            live bot writes here at runtime
-docs/                            findings.md, beta_matrix.md, etc.
+docs/                            findings.md, beta_matrix.md, polymarket_market_metadata.md, etc.
 ```
 
 ## Dataset schema
@@ -155,16 +159,26 @@ python -m data_collection.ws_logger
 # Required by data_collection.telonex.build_dataset below.
 python -m data_collection.telonex.fetch_metadata
 
-# Turn raw .h5 logs into per-game parquets at data/self_collected/per_game_data/
+# Turn raw .h5 logs into per-game parquets at data/self_collected/per_game_data/.
+# Also writes data/self_collected/games.csv.
 python -m data_collection.self_collected.build_dataset
 
-# Pull quote data from the Telonex API (needs TELONEX_API_KEY in .env) and
-# write per-game parquets at data/telonex/per_game_data/.
+# Pull quote data from the Telonex API and write per-game parquets at
+# data/telonex/per_game_data/. Requires TELONEX_API_KEY in .env.
+# Resolves missing kickoffs via Gamma (writes data/telonex/cache/kickoff_times.json)
+# and missing numeric market_ids via Gamma (writes data/telonex/cache/market_ids.json);
+# both caches are merge-only and ship pre-seeded for a warm start.
 python -m data_collection.telonex.build_dataset
 
+# Reconstruct data/telonex/games.csv from the per-game parquets + telonex
+# markets.parquet + the kickoff cache. Triggers the kickoff resolver if any
+# per-game parquet lacks a cached kickoff.
+python -m pregame_pca.pipelines.build_telonex_games_csv
+
 # Fetch resolved-market outcomes from Gamma into data/outcomes.parquet.
-# Reads market_ids from data/{self_collected,telonex}/games.csv (written by the
-# build_dataset scripts above). Resumable; only fetches new/unresolved markets.
+# Reads market_ids from data/{self_collected,telonex}/games.csv (written by
+# self_collected.build_dataset and build_telonex_games_csv respectively).
+# Resumable; only fetches new/unresolved markets.
 python -m data_collection.fetch_outcomes
 ```
 
