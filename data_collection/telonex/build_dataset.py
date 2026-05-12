@@ -57,6 +57,7 @@ METADATA_PATH = _DATA_DIR / "metadata" / "markets.parquet"
 SNAPSHOTS_DIR = _DATA_DIR / "per_game_data"
 CACHE_DIR = _DATA_DIR / "cache"
 KICKOFF_CACHE_PATH = CACHE_DIR / "kickoff_times.json"
+MARKET_ID_CACHE_PATH = CACHE_DIR / "market_ids.json"
 SKIPPED_PATH = CACHE_DIR / "skipped_unknown_kickoff.txt"
 
 SELF_COLLECTED_GAMES_CSV = Path(project_root) / "data" / "self_collected" / "games.csv"
@@ -314,21 +315,98 @@ _market_id_cache = {}  # condition_id -> int32
 
 
 def _load_market_id_map():
-    """Preload condition_id -> Gamma numeric market_id.
+    """Load {condition_id: numeric_market_id} from the persisted cache."""
+    if not MARKET_ID_CACHE_PATH.exists():
+        return {}
+    with open(MARKET_ID_CACHE_PATH) as f:
+        return {k: int(v) for k, v in json.load(f).items()}
 
-    Standalone pregame_pca has no pmxt_v2 cache to seed from, so this returns
-    an empty map and resolve_market_id falls back to crc32. The pre-built
-    per-game parquets shipped with the repo retain their original Gamma IDs;
-    only freshly-collected games will get crc32-derived ids.
+
+def _save_market_id_map(m):
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    with open(MARKET_ID_CACHE_PATH, "w") as f:
+        json.dump({k: int(v) for k, v in m.items()}, f, indent=2, sort_keys=True)
+
+
+async def _gamma_lookup_market_id(client, slug, sem):
+    """Resolve a Polymarket market slug to Gamma's numeric market_id.
+
+    Per docs/polymarket_market_metadata.md section 2d, the `slug` filter on
+    /markets requires `closed` to match the market's state, so we try both.
     """
-    return {}
+    async with sem:
+        for closed in ("false", "true"):
+            try:
+                r = await client.get(
+                    f"{GAMMA_API}/markets",
+                    params={"slug": slug, "closed": closed},
+                    timeout=15,
+                )
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                if not data:
+                    continue
+                m = data[0] if isinstance(data, list) else data
+                mid = m.get("id")
+                if mid:
+                    return int(mid)
+            except Exception:
+                continue
+        return None
+
+
+async def resolve_market_ids(games, market_id_map, gamma_parallel=15):
+    """Ensure every market in `games` has a numeric Gamma market_id.
+
+    Fetches missing ids via Gamma's /markets?slug={slug} endpoint and
+    persists them. Merges into the existing cache so previously-resolved
+    entries are never lost.
+    """
+    needed = {}  # condition_id -> slug
+    for markets in games.values():
+        for m in markets:
+            cid = m["condition_id"]
+            if cid in market_id_map:
+                continue
+            needed[cid] = m["slug"]
+
+    if not needed:
+        return market_id_map
+
+    print(f"[market_id] fetching {len(needed):,} numeric ids from Gamma "
+          f"(parallel={gamma_parallel})...", file=sys.stderr, flush=True)
+    sem = asyncio.Semaphore(gamma_parallel)
+    async with httpx.AsyncClient() as client:
+        cids = list(needed.keys())
+        tasks = [_gamma_lookup_market_id(client, needed[c], sem) for c in cids]
+        results = await asyncio.gather(*tasks)
+
+    n_ok = n_fail = 0
+    for cid, mid in zip(cids, results):
+        if mid is not None:
+            market_id_map[cid] = mid
+            n_ok += 1
+        else:
+            n_fail += 1
+    print(f"[market_id]   resolved {n_ok:,}; failed {n_fail:,}", file=sys.stderr)
+
+    _save_market_id_map(market_id_map)
+    return market_id_map
 
 
 def resolve_market_id(condition_id, cache_map):
-    """int32 market_id for self_collected compatibility. Falls back to deterministic hash."""
+    """int32 market_id for self_collected-compatible schema.
+
+    Expects the condition_id to be present in cache_map (populated by
+    resolve_market_ids before any per_game data is written). If Gamma
+    resolution failed for this id, falls back to crc32 with a warning —
+    the per-game parquet will still write, but with a synthetic id.
+    """
     if condition_id in cache_map:
         return cache_map[condition_id]
-    # Deterministic 31-bit crc32 so output is stable across runs
+    print(f"[market_id] WARNING: no Gamma id for {condition_id}; "
+          f"using crc32 fallback", file=sys.stderr)
     return zlib.crc32(condition_id.encode()) & 0x7fffffff
 
 
@@ -508,6 +586,7 @@ async def run(args):
     market_id_map = _load_market_id_map()
     print(f"[main] market_id cache: {len(market_id_map):,} condition_ids",
           file=sys.stderr)
+    market_id_map = await resolve_market_ids(games, market_id_map)
 
     sem = asyncio.Semaphore(args.parallel)
     ok = err = skipped = 0

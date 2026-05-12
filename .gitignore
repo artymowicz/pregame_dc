@@ -18,7 +18,10 @@ data/self_collected/games.csv
 data/telonex/per_game_data/
 data/telonex/games.csv
 data/telonex/metadata/
-data/telonex/cache/
+data/telonex/cache/*
+# but ship the small JSON caches so fresh clones get a warm start
+!data/telonex/cache/kickoff_times.json
+!data/telonex/cache/market_ids.json
 
 # Raw WebSocket logs and discovered-markets CSV — produced by data_collection/.
 data/raw_ws_logs/
