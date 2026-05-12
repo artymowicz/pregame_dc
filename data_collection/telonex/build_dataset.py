@@ -59,9 +59,7 @@ CACHE_DIR = _DATA_DIR / "cache"
 KICKOFF_CACHE_PATH = CACHE_DIR / "kickoff_times.json"
 SKIPPED_PATH = CACHE_DIR / "skipped_unknown_kickoff.txt"
 
-DOME_GAMES_CSV = Path(project_root) / "data" / "dome" / "games.csv"
 SELF_COLLECTED_GAMES_CSV = Path(project_root) / "data" / "self_collected" / "games.csv"
-PMXT_V2_LOOKUP = Path(project_root) / "data" / "pmxt_v2" / "cache" / "metadata_lookup.json"
 
 # Canonical full-set distribution: 3 moneyline + 4 spread + 4 totals + 1 btts.
 FULL_SET_COUNTS = {"moneyline": 3, "spreads": 4, "totals": 4, "both_teams_to_score": 1}
@@ -199,25 +197,6 @@ def _load_games_csv_kickoffs(csv_path):
     return out
 
 
-def _load_pmxt_v2_kickoffs(path):
-    """Return {condition_id: kickoff_epoch, event_slug: kickoff_epoch} from pmxt_v2 cache."""
-    cid_map = {}
-    ev_map = {}
-    if not path.exists():
-        return cid_map, ev_map
-    with open(path) as f:
-        lookup = json.load(f)
-    for cid, info in lookup.items():
-        ts = _parse_iso(info.get("game_start_time", ""))
-        if ts is None:
-            continue
-        cid_map[cid] = ts
-        ev = info.get("event_slug", "")
-        if ev:
-            ev_map[ev] = ts
-    return cid_map, ev_map
-
-
 def _load_kickoff_memo():
     if KICKOFF_CACHE_PATH.exists():
         with open(KICKOFF_CACHE_PATH) as f:
@@ -265,13 +244,10 @@ async def resolve_kickoffs(games, skip_gamma=False, gamma_parallel=15):
     memo = _load_kickoff_memo()
     hits_memo = sum(1 for g in games if g in memo)
 
-    # Dome + self_collected indexed by event_slug
-    dome_map = _load_games_csv_kickoffs(DOME_GAMES_CSV)
+    # self_collected indexed by event_slug
     self_collected_map = _load_games_csv_kickoffs(SELF_COLLECTED_GAMES_CSV)
-    pmxt_cid_map, pmxt_ev_map = _load_pmxt_v2_kickoffs(PMXT_V2_LOOKUP)
-    print(f"[kickoff]   memo={len(memo):,} dome={len(dome_map):,} "
-          f"self_collected={len(self_collected_map):,} pmxt_v2_ev={len(pmxt_ev_map):,} "
-          f"pmxt_v2_cid={len(pmxt_cid_map):,}", file=sys.stderr)
+    print(f"[kickoff]   memo={len(memo):,} "
+          f"self_collected={len(self_collected_map):,}", file=sys.stderr)
 
     resolved = dict(memo)
     unresolved = []
@@ -284,16 +260,9 @@ async def resolve_kickoffs(games, skip_gamma=False, gamma_parallel=15):
         # Try every event_slug the game uses (main event + -more-markets)
         ev_slugs_used = {m["event_slug"] for m in markets}
         for ev in ev_slugs_used:
-            ts = dome_map.get(ev) or pmxt_ev_map.get(ev) or self_collected_map.get(ev)
+            ts = self_collected_map.get(ev)
             if ts:
                 break
-
-        # Fall back to condition_id lookup in pmxt_v2 metadata cache
-        if ts is None:
-            for m in markets:
-                ts = pmxt_cid_map.get(m["condition_id"])
-                if ts:
-                    break
 
         if ts is not None:
             resolved[gds] = ts
@@ -345,15 +314,14 @@ _market_id_cache = {}  # condition_id -> int32
 
 
 def _load_market_id_map():
-    """Preload condition_id -> Gamma numeric market_id from caches."""
-    out = {}
-    if PMXT_V2_LOOKUP.exists():
-        with open(PMXT_V2_LOOKUP) as f:
-            for cid, info in json.load(f).items():
-                mid = info.get("market_id")
-                if mid and mid != 0:
-                    out[cid] = int(mid)
-    return out
+    """Preload condition_id -> Gamma numeric market_id.
+
+    Standalone pregame_pca has no pmxt_v2 cache to seed from, so this returns
+    an empty map and resolve_market_id falls back to crc32. The pre-built
+    per-game parquets shipped with the repo retain their original Gamma IDs;
+    only freshly-collected games will get crc32-derived ids.
+    """
+    return {}
 
 
 def resolve_market_id(condition_id, cache_map):
