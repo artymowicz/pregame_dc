@@ -47,6 +47,7 @@ WS_EVENTS_DIR   = LOGS_DIR / "ws_events"
 WS_MASTER_LOG   = LOGS_DIR / "ws_events_master.jsonl"
 ORDERS_SUMMARY  = LOGS_DIR / "orders_summary.jsonl"
 ORDERS_RESOLVED = LOGS_DIR / "orders_summary_resolved.jsonl"
+KICKOFFS_LOG    = LOGS_DIR / "kickoffs.jsonl"
 STATE_FILE      = LOGS_DIR / "state.json"
 
 # ---- data_collection paths ---------------------------------------

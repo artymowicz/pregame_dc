@@ -124,6 +124,7 @@ from pregame_pca import paths
 LOGS_DIR = paths.LOGS_DIR
 WS_EVENTS_DIR = paths.WS_EVENTS_DIR
 ORDERS_LOG = paths.ORDERS_SUMMARY
+KICKOFFS_LOG = paths.KICKOFFS_LOG
 STATE_FILE = paths.STATE_FILE
 WS_MASTER_LOG = paths.WS_MASTER_LOG
 DEFAULT_MODEL = paths.MODEL_T_25MIN
@@ -659,6 +660,19 @@ class PregamePCABot:
                 asks_clean[s] = self._market_tracker.get_best_ask(int(market_ids_12[s]), True)
                 asks_clean[s + 12] = self._market_tracker.get_best_ask(int(market_ids_12[s]), False)
             pred = self.model.predict(asks_clean)
+
+            # Persist the full kickoff snapshot — one line per game, whether
+            # or not it produces any fires.
+            kickoff_record = {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "game_slug": slug,
+                "start_ts": int(game_info["start_ts"]),
+                "t_offset_s": self.t_offset,
+                "asks": asks_clean.tolist(),
+                "pred": pred[:12].tolist(),
+            }
+            with open(KICKOFFS_LOG, "a") as f:
+                f.write(json.dumps(kickoff_record) + "\n")
 
             # Snapshot of the inputs / model output for this kickoff.
             # Header line: short market labels, aligned 5-char wide to match
