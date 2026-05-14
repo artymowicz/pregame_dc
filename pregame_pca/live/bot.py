@@ -661,6 +661,12 @@ class PregamePCABot:
                 asks_clean[s + 12] = self._market_tracker.get_best_ask(int(market_ids_12[s]), False)
             pred = self.model.predict(asks_clean)
 
+            # Per-slot book spread: ask_yes + ask_no - 1, symmetric across the
+            # YES/NO pair so we emit one value per market.
+            book_spread_12 = [
+                float(asks_clean[s] + asks_clean[s + 12] - 1.0) for s in range(12)
+            ]
+
             # Persist the full kickoff snapshot — one line per game, whether
             # or not it produces any fires.
             kickoff_record = {
@@ -668,8 +674,11 @@ class PregamePCABot:
                 "game_slug": slug,
                 "start_ts": int(game_info["start_ts"]),
                 "t_offset_s": self.t_offset,
+                "rule": self.rule,
+                "rule_threshold": self.threshold,
                 "asks": asks_clean.tolist(),
                 "pred": pred[:12].tolist(),
+                "book_spread": book_spread_12,
             }
             with open(KICKOFFS_LOG, "a") as f:
                 f.write(json.dumps(kickoff_record) + "\n")
