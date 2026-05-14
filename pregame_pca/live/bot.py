@@ -129,7 +129,9 @@ WS_MASTER_LOG = paths.WS_MASTER_LOG
 DEFAULT_MODEL = paths.MODEL_T_25MIN
 
 ASK_LO, ASK_HI = 0.01, 0.99
+SPREAD_FLOOR = 0.005          # floor for book_spread when computing ratio
 DEFAULT_THRESHOLD = 0.05
+DEFAULT_RULE = "edge"         # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
 DEFAULT_T_OFFSET_S = -1500          # -25 min
 DEFAULT_BUDGET = 20.0
 DEFAULT_HOURS_AHEAD = 48
@@ -285,6 +287,9 @@ class PregamePCABot:
         self.live = bool(args.live)
         self.budget = float(args.budget)
         self.threshold = float(args.threshold)
+        self.rule = str(args.rule)
+        if self.rule not in ("edge", "ratio"):
+            raise SystemExit(f"--rule: must be 'edge' or 'ratio', got {self.rule!r}")
         self.t_offset = int(args.time_seconds)
 
         # Market-type filter (comma-separated, e.g. "moneyline" or "moneyline,totals")
@@ -673,26 +678,37 @@ class PregamePCABot:
             print(f"[{now_str()}]   {slug}    ask(NO):  {asks_no_str}")
             print(f"[{now_str()}]   {slug}    pred:     {preds_str}")
 
-            # Find candidate fires
+            # Find candidate fires. Score depends on --rule:
+            #   "edge"  → score = edge,                                fire when score > threshold
+            #   "ratio" → score = edge / max(book_spread, SPREAD_FLOOR), fire when score > threshold
+            # book_spread is computed per-slot from ask_yes + ask_no - 1.
             candidates = []
             for slot in self.candidate_slots:
                 ask = asks_clean[slot]
                 if not (ASK_LO <= ask <= ASK_HI):
                     continue
                 edge = float(pred[slot] - ask)
-                if edge <= self.threshold:
+                ask_complement = float(asks_clean[(slot + 12) % 24])
+                book_spread = ask + ask_complement - 1.0
+                if self.rule == "ratio":
+                    score = edge / max(book_spread, SPREAD_FLOOR)
+                else:
+                    score = edge
+                if score <= self.threshold:
                     continue
-                candidates.append((slot, ask, float(pred[slot]), edge))
+                candidates.append((slot, ask, float(pred[slot]), edge, book_spread, score))
 
-            candidates.sort(key=lambda c: -c[3])    # by descending edge
+            candidates.sort(key=lambda c: -c[5])    # by descending score
             print(f"[{now_str()}]   {slug}: {len(candidates)} candidate fire(s) "
-                  f"(threshold {self.threshold:+.3f})")
+                  f"(rule={self.rule}, threshold {self.threshold:+.3f})")
 
-            for slot, ask, pred_val, edge in candidates:
-                await self._fire_token(game_info, slot, ask, pred_val, edge, asks_clean)
+            for slot, ask, pred_val, edge, book_spread, score in candidates:
+                await self._fire_token(game_info, slot, ask, pred_val, edge,
+                                       book_spread, score, asks_clean)
                 await asyncio.sleep(INTRA_GAME_FIRE_DELAY_S)
 
-    async def _fire_token(self, game_info, slot, ask, pred_val, edge, asks_24):
+    async def _fire_token(self, game_info, slot, ask, pred_val, edge,
+                          book_spread, score, asks_24):
         slug = game_info["slug"]
         token_id = game_info["tokens_24"][slot]
         market_type, market_label, side = _slot_label(slot)
@@ -727,6 +743,10 @@ class PregamePCABot:
             "predicted_prob": float(pred_val),
             "predicted_prob_clipped": float(np.clip(pred_val, 0.0, 1.0)),
             "edge": edge,
+            "book_spread": float(book_spread),
+            "rule": self.rule,
+            "rule_threshold": self.threshold,
+            "score": float(score),
             "order_args": {"price": price, "size": size},
             "notional_usdc": notional,
             "placed": False,
@@ -924,8 +944,8 @@ class PregamePCABot:
     async def run(self):
         print(f"[{now_str()}] PregamePCABot starting "
               f"(live={self.live}, budget=${self.budget}, "
-              f"threshold={self.threshold}, t_offset={self.t_offset}s, "
-              f"model={self.args.model})")
+              f"rule={self.rule}, threshold={self.threshold}, "
+              f"t_offset={self.t_offset}s, model={self.args.model})")
 
         await self.discover_and_schedule()
         asyncio.create_task(self._periodic_discovery())
@@ -947,8 +967,14 @@ def parse_args():
                     help="Actually place orders. Default is dry-run.")
     ap.add_argument("--budget", type=float, default=DEFAULT_BUDGET,
                     help=f"USDC spend cap (default {DEFAULT_BUDGET})")
+    ap.add_argument("--rule", type=str, default=DEFAULT_RULE,
+                    choices=["edge", "ratio"],
+                    help="Firing rule: 'edge' (fire when predicted_prob−ask > threshold) "
+                         "or 'ratio' (fire when edge/max(book_spread, 0.005) > threshold). "
+                         f"Default {DEFAULT_RULE}.")
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                    help=f"Edge threshold to fire (default {DEFAULT_THRESHOLD})")
+                    help=f"Threshold for the firing rule (default {DEFAULT_THRESHOLD}; "
+                         "interpreted as edge for --rule=edge, or as ratio for --rule=ratio)")
     ap.add_argument("--time-seconds", type=int, default=DEFAULT_T_OFFSET_S,
                     help=f"Fire offset relative to game_start (default {DEFAULT_T_OFFSET_S} = -25min)")
     ap.add_argument("--model", type=str, default=str(DEFAULT_MODEL),
