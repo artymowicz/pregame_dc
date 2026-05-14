@@ -406,6 +406,10 @@ class MarketWebSocket(PolyWebSocket):
         except AttributeError:
             return False
 
+    @property
+    def is_connected(self) -> bool:
+        return self.ws is not None and self.ws.state == websockets.State.OPEN
+
     async def run(self):
         """Connect, subscribe, dispatch events. Reconnects on failure."""
         while not self._stop_event.is_set():
@@ -624,6 +628,28 @@ class MarketTracker:
             if level["size"] > 0:
                 return level["price"]
         return 0.0
+
+    def get_best_bid_with_size_and_ts(self, market_id, outcome):
+        """Return (price, size, ts) of the best bid level (highest price with
+        size > 0), or None if the bid book is empty / all-tombstoned."""
+        book = self.books.get((market_id, outcome))
+        if not book:
+            return None
+        for level in book.bids:
+            if level["size"] > 0:
+                return (level["price"], level["size"], level["ts"])
+        return None
+
+    def get_best_ask_with_size_and_ts(self, market_id, outcome):
+        """Return (price, size, ts) of the best ask level (lowest price with
+        size > 0), or None if the ask book is empty / all-tombstoned."""
+        book = self.books.get((market_id, outcome))
+        if not book:
+            return None
+        for level in book.asks:
+            if level["size"] > 0:
+                return (level["price"], level["size"], level["ts"])
+        return None
 
     def get_best_bid_with_size(self, market_id, outcome):
         """Return (price, size) from best bid, or (0.0, 0.0) if book empty."""

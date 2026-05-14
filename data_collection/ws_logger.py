@@ -852,7 +852,8 @@ async def run(domain, output_dir, interval, flush_rows, flush_interval,
         print(f"\n[{ts()}] Shutting down...")
         stop_event.set()
 
-    loop.add_signal_handler(signal.SIGINT, shutdown)
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, shutdown)
 
     try:
         await stop_event.wait()

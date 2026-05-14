@@ -112,6 +112,7 @@ _pou_base.BaseBuilder._get_domain_separator = _patched_get_domain_separator
 
 import pregame_pca.polymarket.sdk as sdk
 from pregame_pca.polymarket.sdk import UserWebSocket, jlog, now_str
+from pregame_pca.polymarket.redundant_tracker import RedundantMarketTracker
 from pregame_pca.discovery.soccer import build_constraints, fetch_markets
 from pregame_pca.constants import MARKET_LABELS
 from pregame_pca.discovery.slots import standard_slot_map
@@ -330,12 +331,13 @@ class PregamePCABot:
         self._upcoming_games: dict[str, dict] = {}
 
         # Long-lived market WebSocket: subscribed to every upcoming game's
-        # 24 tokens at all times so book per_game_data are pre-warmed by the time
-        # any kickoff fires. Replaced (disconnect+reconnect with new token
-        # set) whenever discovery picks up newly listed games.
-        self._market_ws: sdk.MarketWebSocket | None = None
-        self._market_tracker: sdk.MarketTracker | None = None
-        self._market_ws_task: asyncio.Task | None = None
+        # 24 tokens at all times so book per_game_data are pre-warmed by the
+        # time any kickoff fires. Replaced (disconnect+reconnect with new
+        # token set) whenever discovery picks up newly listed games.
+        # Wrapped in RedundantMarketTracker so a peer connection seeds the
+        # book on each reconnect — closes the partial-book gap that arises
+        # when Polymarket fails to re-send book snapshots after a drop.
+        self._market_tracker: RedundantMarketTracker | None = None
         self._market_token_set: set[str] = set()
 
         # Spend & trade-count tracking (this session only)
@@ -570,53 +572,29 @@ class PregamePCABot:
         # Just keep the tracker's token_to_key fresh in case anything has
         # been added since last refresh (safe no-op when nothing new).
         if (
-            self._market_ws is not None
-            and self._market_tracker is not None
+            self._market_tracker is not None
             and new_set.issubset(self._market_token_set)
         ):
-            self._market_tracker.token_to_key.update(new_token_to_key)
+            await self._market_tracker.update_token_to_key(new_token_to_key)
             return
 
-        # Tear down existing WS if any
-        if self._market_ws is not None:
-            self._market_ws.stop()
-            if self._market_ws_task and not self._market_ws_task.done():
-                try:
-                    await asyncio.wait_for(self._market_ws_task, timeout=2.0)
-                except (asyncio.TimeoutError, Exception):
-                    self._market_ws_task.cancel()
+        # Tear down existing tracker if any
+        if self._market_tracker is not None:
+            await self._market_tracker.stop()
+            self._market_tracker = None
 
         if not new_tokens:
-            self._market_ws = None
-            self._market_tracker = None
-            self._market_ws_task = None
             self._market_token_set = set()
             return
 
-        # Build new tracker + WS.
-        self._market_tracker = sdk.MarketTracker(
-            token_to_key=new_token_to_key, all_token_ids=new_tokens,
+        # Build new redundant tracker (manages K WSes + K MarketTrackers).
+        self._market_tracker = RedundantMarketTracker(
+            token_to_key=new_token_to_key,
+            all_token_ids=new_tokens,
+            k=2,
         )
         self._market_token_set = new_set
-
-        tracker = self._market_tracker
-
-        def on_update(evt):
-            ev_type = evt.get("event_type") or evt.get("type", "")
-            if ev_type == "book":
-                tracker.process_book(evt)
-            elif ev_type == "price_change":
-                tracker.process_price_change(evt)
-
-        # Reset tracker state on every reconnect (per CLAUDE.md note about
-        # WS reliability — stale data after a reconnect can desync books).
-        async def on_connect():
-            self._market_tracker.reset()
-
-        self._market_ws = sdk.MarketWebSocket(token_ids=new_tokens)
-        self._market_ws.on_update = on_update
-        self._market_ws.on_connect = on_connect
-        self._market_ws_task = asyncio.create_task(self._market_ws.run())
+        await self._market_tracker.start()
         print(f"[{now_str()}] MARKET WS subscribed to {len(new_tokens)} tokens "
               f"({len(self._upcoming_games)} games)")
 
