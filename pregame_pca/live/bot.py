@@ -656,9 +656,12 @@ class PregamePCABot:
                 return
 
             asks_clean = np.empty(24, dtype=np.float64)
+            sizes_clean = np.empty(24, dtype=np.float64)
             for s in range(12):
-                asks_clean[s] = self._market_tracker.get_best_ask(int(market_ids_12[s]), True)
-                asks_clean[s + 12] = self._market_tracker.get_best_ask(int(market_ids_12[s]), False)
+                yp, ys = self._market_tracker.get_best_ask_with_size(int(market_ids_12[s]), True)
+                np_p, np_s = self._market_tracker.get_best_ask_with_size(int(market_ids_12[s]), False)
+                asks_clean[s]      = yp;   sizes_clean[s]      = ys
+                asks_clean[s + 12] = np_p; sizes_clean[s + 12] = np_s
             pred = self.model.predict(asks_clean)
 
             # Per-slot book spread: ask_yes + ask_no - 1, symmetric across the
@@ -677,6 +680,7 @@ class PregamePCABot:
                 "rule": self.rule,
                 "rule_threshold": self.threshold,
                 "asks": asks_clean.tolist(),
+                "ask_sizes": sizes_clean.tolist(),
                 "pred": pred[:12].tolist(),
                 "book_spread": book_spread_12,
             }
@@ -727,16 +731,18 @@ class PregamePCABot:
 
             for slot, ask, pred_val, edge, book_spread, score in candidates:
                 await self._fire_token(game_info, slot, ask, pred_val, edge,
-                                       book_spread, score, asks_clean)
+                                       book_spread, score, asks_clean, sizes_clean)
                 await asyncio.sleep(INTRA_GAME_FIRE_DELAY_S)
 
     async def _fire_token(self, game_info, slot, ask, pred_val, edge,
-                          book_spread, score, asks_24):
+                          book_spread, score, asks_24, sizes_24):
         slug = game_info["slug"]
         token_id = game_info["tokens_24"][slot]
         market_type, market_label, side = _slot_label(slot)
         slot_complement = (slot + 12) % 24
         ask_complement = float(asks_24[slot_complement])
+        ask_size = float(sizes_24[slot])
+        ask_complement_size = float(sizes_24[slot_complement])
 
         # Limit price: round up to nearest cent. The `- 1e-9` defuzzes floats
         # so that an ask exactly on a cent (e.g. 0.55, which floats to ~55.00...07
@@ -762,7 +768,9 @@ class PregamePCABot:
             "market_id": int(game_info["market_ids_12"][slot % 12]),
             "token_id": token_id,
             "ask": float(ask),
+            "ask_size": ask_size,
             "ask_complement": ask_complement,
+            "ask_complement_size": ask_complement_size,
             "predicted_prob": float(pred_val),
             "predicted_prob_clipped": float(np.clip(pred_val, 0.0, 1.0)),
             "edge": edge,
