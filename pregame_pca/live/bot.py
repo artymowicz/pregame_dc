@@ -127,13 +127,14 @@ ORDERS_LOG = paths.ORDERS_SUMMARY
 KICKOFFS_LOG = paths.KICKOFFS_LOG
 STATE_FILE = paths.STATE_FILE
 WS_MASTER_LOG = paths.WS_MASTER_LOG
-DEFAULT_MODEL = paths.MODEL_T_25MIN
+DEFAULT_MODEL = paths.MODEL_T_10MIN_K4
 
 ASK_LO, ASK_HI = 0.01, 0.99
 SPREAD_FLOOR = 0.005          # floor for book_spread when computing ratio
-DEFAULT_THRESHOLD = 0.05
-DEFAULT_RULE = "edge"         # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
-DEFAULT_T_OFFSET_S = -1500          # -25 min
+DEFAULT_THRESHOLD = 1.0
+DEFAULT_RULE = "ratio"        # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
+DEFAULT_RES_NORM_MIN = 2.25   # skip a game's fires entirely if res_norm < this
+DEFAULT_T_OFFSET_S = -600           # -10 min
 DEFAULT_BUDGET = 20.0
 DEFAULT_HOURS_AHEAD = 48
 
@@ -221,6 +222,11 @@ class Model:
         self.t_target = float(z["T_TARGET"])
         self.k = int(z["K"])
         self.train_n = int(z["train_n"])
+        # Eigenvectors of the training-set z-scored covariance, descending by
+        # eigenvalue. The top-K columns span the PCR subspace; the residual
+        # off that span is used as the res_norm firing-rule gate.
+        self.U = z["U"]                       # (24, 24)
+        self.U_K = self.U[:, :self.k]         # (24, K)
         # Optional: impute-only variant ships impute_values (24,). When
         # present, ask cells equal to 1.0 (MarketTracker's "no book" sentinel)
         # are replaced with the corresponding training-set column mean before
@@ -230,14 +236,26 @@ class Model:
             z["impute_values"] if "impute_values" in z.files else None
         )
 
-    def predict(self, asks_24: np.ndarray) -> np.ndarray:
-        """asks_24: (24,) raw ask vector in canonical order. Returns (24,) preds."""
+    def _zscore(self, asks_24: np.ndarray) -> np.ndarray:
         x = asks_24
         if self.impute_values is not None:
             x = np.where(x == 1.0, self.impute_values, x)
-        z = (x - self.mu) / self.sd_safe
+        return (x - self.mu) / self.sd_safe
+
+    def predict(self, asks_24: np.ndarray) -> np.ndarray:
+        """asks_24: (24,) raw ask vector in canonical order. Returns (24,) preds."""
+        z = self._zscore(asks_24)
         feats = np.concatenate([z, [1.0]])
         return self.beta_K @ feats
+
+    def res_norm(self, asks_24: np.ndarray) -> float:
+        """L2 norm of the z-scored ask vector's residual after projecting onto
+        the top-K eigenvectors. Cells where this is small are "on-manifold"
+        (book sits close to where the model's K-d subspace places it); cells
+        where it's large are off-manifold. Larger res_norm is gated for in
+        the firing rule."""
+        z = self._zscore(asks_24)
+        return float(np.linalg.norm(z - self.U_K @ (self.U_K.T @ z)))
 
 
 # ---- canonical-slot helpers --------------------------------------------
@@ -291,6 +309,7 @@ class PregamePCABot:
         self.rule = str(args.rule)
         if self.rule not in ("edge", "ratio"):
             raise SystemExit(f"--rule: must be 'edge' or 'ratio', got {self.rule!r}")
+        self.res_norm_min = float(args.res_norm_min)
         self.t_offset = int(args.time_seconds)
 
         # Market-type filter (comma-separated, e.g. "moneyline" or "moneyline,totals")
@@ -663,6 +682,7 @@ class PregamePCABot:
                 asks_clean[s]      = yp;   sizes_clean[s]      = ys
                 asks_clean[s + 12] = np_p; sizes_clean[s + 12] = np_s
             pred = self.model.predict(asks_clean)
+            res_norm = self.model.res_norm(asks_clean)
 
             # Per-slot book spread: ask_yes + ask_no - 1, symmetric across the
             # YES/NO pair so we emit one value per market.
@@ -679,6 +699,8 @@ class PregamePCABot:
                 "t_offset_s": self.t_offset,
                 "rule": self.rule,
                 "rule_threshold": self.threshold,
+                "res_norm": res_norm,
+                "res_norm_min": self.res_norm_min,
                 "asks": asks_clean.tolist(),
                 "ask_sizes": sizes_clean.tolist(),
                 "pred": pred[:12].tolist(),
@@ -704,6 +726,15 @@ class PregamePCABot:
             print(f"[{now_str()}]   {slug}    ask(YES): {asks_yes_str}")
             print(f"[{now_str()}]   {slug}    ask(NO):  {asks_no_str}")
             print(f"[{now_str()}]   {slug}    pred:     {preds_str}")
+
+            # Per-game gate: if the snapshot is too "on-manifold" (i.e. its
+            # residual after projecting onto the top-K PCs is small), the
+            # firing rule was shown to lose money in backtest. Skip all slots.
+            print(f"[{now_str()}]   {slug}    res_norm: {res_norm:.3f} "
+                  f"(min={self.res_norm_min:.3f})")
+            if res_norm < self.res_norm_min:
+                print(f"[{now_str()}]   {slug}: skipped (res_norm below min)")
+                return
 
             # Find candidate fires. Score depends on --rule:
             #   "edge"  → score = edge,                                fire when score > threshold
@@ -731,11 +762,12 @@ class PregamePCABot:
 
             for slot, ask, pred_val, edge, book_spread, score in candidates:
                 await self._fire_token(game_info, slot, ask, pred_val, edge,
-                                       book_spread, score, asks_clean, sizes_clean)
+                                       book_spread, score, res_norm,
+                                       asks_clean, sizes_clean)
                 await asyncio.sleep(INTRA_GAME_FIRE_DELAY_S)
 
     async def _fire_token(self, game_info, slot, ask, pred_val, edge,
-                          book_spread, score, asks_24, sizes_24):
+                          book_spread, score, res_norm, asks_24, sizes_24):
         slug = game_info["slug"]
         token_id = game_info["tokens_24"][slot]
         market_type, market_label, side = _slot_label(slot)
@@ -775,8 +807,10 @@ class PregamePCABot:
             "predicted_prob_clipped": float(np.clip(pred_val, 0.0, 1.0)),
             "edge": edge,
             "book_spread": float(book_spread),
+            "res_norm": float(res_norm),
             "rule": self.rule,
             "rule_threshold": self.threshold,
+            "res_norm_min": self.res_norm_min,
             "score": float(score),
             "order_args": {"price": price, "size": size},
             "notional_usdc": notional,
@@ -976,6 +1010,7 @@ class PregamePCABot:
         print(f"[{now_str()}] PregamePCABot starting "
               f"(live={self.live}, budget=${self.budget}, "
               f"rule={self.rule}, threshold={self.threshold}, "
+              f"res_norm_min={self.res_norm_min}, "
               f"t_offset={self.t_offset}s, model={self.args.model})")
 
         await self.discover_and_schedule()
@@ -1006,8 +1041,12 @@ def parse_args():
     ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
                     help=f"Threshold for the firing rule (default {DEFAULT_THRESHOLD}; "
                          "interpreted as edge for --rule=edge, or as ratio for --rule=ratio)")
+    ap.add_argument("--res-norm-min", type=float, default=DEFAULT_RES_NORM_MIN,
+                    help="Skip the whole game if the snapshot's res_norm "
+                         "(||z − projection onto top-K PCs||) is below this. "
+                         f"Default {DEFAULT_RES_NORM_MIN}.")
     ap.add_argument("--time-seconds", type=int, default=DEFAULT_T_OFFSET_S,
-                    help=f"Fire offset relative to game_start (default {DEFAULT_T_OFFSET_S} = -25min)")
+                    help=f"Fire offset relative to game_start (default {DEFAULT_T_OFFSET_S})")
     ap.add_argument("--model", type=str, default=str(DEFAULT_MODEL),
                     help="Path to .npz model parameters")
     ap.add_argument("--hours-ahead", type=int, default=DEFAULT_HOURS_AHEAD,

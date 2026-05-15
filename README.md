@@ -32,10 +32,8 @@ python -m pregame_pca.analyze.cross_eval_self_collected_multi_t
 python -m pregame_pca.analyze.calibration_plots
 python -m pregame_pca.analyze.calibration_plots_per_market
 
-# Train + save model parameters at t = −10 min
-python -m pregame_pca.live.fit_save_model \
-    --time-seconds -600 \
-    --out pregame_pca/models/rank3_t-10min.npz
+# Train + save model parameters (defaults: K=4 PCR at t = −10 min, on full telonex)
+python -m pregame_pca.live.fit_save_model
 ```
 
 ## Layout
@@ -104,10 +102,9 @@ B −2.5, Over 1.5, Over 2.5, Over 3.5, Over 4.5, BTTS.
 # Dry run (default, no real orders)
 python -m pregame_pca.live.bot
 
-# Real orders (requires .env with POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS)
-python -m pregame_pca.live.bot --live --budget 100 \
-    --threshold 0.04 --markets moneyline --time-seconds -600 \
-    --model pregame_pca/models/rank3_t-10min.npz
+# Real orders (requires .env with POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS).
+# Defaults: rule=ratio, threshold=1.0, res-norm-min=2.25, model=rank4_t-10min.npz.
+python -m pregame_pca.live.bot --live --budget 100
 
 # After games resolve, backfill outcomes
 python -m pregame_pca.live.resolve_outcomes
@@ -116,10 +113,15 @@ python -m pregame_pca.live.resolve_outcomes
 The bot:
 1. Discovers upcoming soccer games via Gamma every hour
 2. Subscribes to all candidate token books via the Polymarket Market WS
-3. At `kickoff + --time-seconds` for each game, computes the rank-3
-   prediction over the 24 token asks
-4. For each candidate slot (filtered by `--markets`) where
-   `pred − ask > --threshold`, posts a FOK buy via the CLOB v2 endpoint
+3. At `kickoff + --time-seconds` for each game, computes the rank-K
+   prediction (default K=4) over the 24 token asks and the residual-norm of
+   the z-scored ask vector against the top-K eigenvector subspace
+4. If `res_norm < --res-norm-min`, skips the whole game (the snapshot sits
+   too close to the "on-manifold" subspace where the strategy is unprofitable)
+5. Otherwise for each candidate slot (filtered by `--markets`) where the
+   score exceeds `--threshold` — `pred − ask` under `--rule=edge` or
+   `(pred − ask) / max(book_spread, 0.005)` under `--rule=ratio` (default) —
+   posts a FOK buy via the CLOB v2 endpoint
 
 Logs:
 - `logs/orders_summary.jsonl` — one line per attempted order
@@ -189,14 +191,16 @@ labeled parquets.
 
 ## Models
 
-Two trained model artifacts are shipped in `pregame_pca/models/`:
+Trained model artifacts in `pregame_pca/models/`:
 
-- `rank3_t-25min.npz` — fit at t = −25 min (matches the original "fire at
-  -25, threshold 0.05" deployment). Train n = 2166.
-- `rank3_t-10min.npz` — fit at t = −10 min. Train n = 2170. The current
-  recommended live-trading model: moneyline edge is materially larger near
-  kickoff and the per-feature standardisation is more stable past −10 min.
+- `rank4_t-10min.npz` — **current recommended live-trading model**: K=4 PCR
+  fit at t = −10 min on the full telonex dataset (train n = 3232). Used in
+  conjunction with the `res_norm > 2.25` and `edge/book_spread > 1.0` firing
+  rule (see `pregame_pca/live/bot.py`).
+- `rank3_t-10min.npz`, `rank3_t-25min.npz` — legacy K=3 models (former
+  deployment). Retained for reproducibility of older backtests.
 
 Each `.npz` carries `mu` (24,), `sd_safe` (24,), `beta_K` (24, 25),
 `U` (24, 24), `eigvals` (24,), and provenance scalars `T_TARGET`, `K`,
-`train_n`. The bot only reads `mu`, `sd_safe`, `beta_K` at inference.
+`train_n`. The bot reads `mu`, `sd_safe`, `beta_K`, `U` at inference (the
+last for computing `res_norm`).

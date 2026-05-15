@@ -1,8 +1,13 @@
-"""Train rank-3 PCR on telonex (excluding self_collected overlap) and save model parameters.
+"""Train rank-K PCR on telonex and save model parameters.
 
-The live bot loads `mu`, `sd_safe`, `beta_K` from the resulting .npz and uses
-them as fixed inference constants. `U` and `eigvals` are saved for diagnostics
-but are not required at inference time.
+The live bot loads `mu`, `sd_safe`, `beta_K`, `U` from the resulting .npz.
+`U` is required at inference time for computing res_norm (the live firing
+gate); `eigvals` is saved for diagnostics.
+
+By default trains on the full telonex set at the requested timepoint. The
+`--exclude-self-collected` flag keeps the historical behaviour of dropping
+games that also appear in the self_collected dataset; we leave the rest of
+telonex (a strict superset under our preferred data-source) as training data.
 
 Outcomes are read from the labeled parquet's `y_0..y_11` columns directly;
 the 24-element outcome vector consumed by the regression is reconstructed via
@@ -20,20 +25,22 @@ from pregame_pca.constants import X_COLS, Y_COLS
 from pregame_pca import paths
 
 
-def load_telonex_excluding_self_collected(t_target: float):
-    """Returns (X, Y) arrays restricted to the t-per_game_data of telonex games not
-    present in self_collected. X has 24 ask columns, Y has 24 outcome columns
-    (12 YES followed by 12 NO = 1 - YES)."""
-    self_collected_slugs = set(
-        pq.read_table(paths.SELF_COLLECTED_LABELED, columns=["game_slug"])
-        .to_pandas()["game_slug"].unique()
-    )
+def load_telonex(t_target: float, exclude_self_collected: bool = False):
+    """Returns (X, Y) arrays at the given t-offset on the telonex labeled
+    dataset. X has 24 ask columns, Y has 24 outcome columns (12 YES followed
+    by 12 NO = 1 - YES). When `exclude_self_collected` is True (legacy),
+    games that also appear in the self_collected dataset are dropped."""
     df = pq.read_table(
         paths.TELONEX_LABELED,
         columns=["game_slug", "split", "seconds_since_game_start", *X_COLS, *Y_COLS],
     ).to_pandas()
     df = df[df["seconds_since_game_start"] == t_target]
-    df = df[~df["game_slug"].isin(self_collected_slugs)]
+    if exclude_self_collected:
+        self_collected_slugs = set(
+            pq.read_table(paths.SELF_COLLECTED_LABELED, columns=["game_slug"])
+            .to_pandas()["game_slug"].unique()
+        )
+        df = df[~df["game_slug"].isin(self_collected_slugs)]
     X = df[X_COLS].to_numpy(dtype=np.float64)
     y = df[Y_COLS].to_numpy(dtype=np.float64)
     keep = ~(X == 1.0).all(axis=1)
@@ -73,14 +80,20 @@ def fit_rank_k(X_tr: np.ndarray, Y_tr: np.ndarray, K: int):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--time-seconds", type=float, default=-1500.0,
-                    help="seconds_since_game_start to train at (default -1500 = -25min)")
-    ap.add_argument("--out", type=Path, default=paths.MODEL_T_25MIN)
-    ap.add_argument("--k", type=int, default=3, help="rank truncation (default 3)")
+    ap.add_argument("--time-seconds", type=float, default=-600.0,
+                    help="seconds_since_game_start to train at (default -600 = -10min)")
+    ap.add_argument("--out", type=Path, default=paths.MODEL_T_10MIN_K4)
+    ap.add_argument("--k", type=int, default=4, help="rank truncation (default 4)")
+    ap.add_argument("--exclude-self-collected", action="store_true",
+                    help="Drop games that also appear in self_collected from the "
+                         "training set (legacy; off by default — sc games stay in).")
     args = ap.parse_args()
 
-    print(f"loading telonex (excluding self_collected overlap) at t={args.time_seconds}s ...")
-    X_tr, Y_tr = load_telonex_excluding_self_collected(args.time_seconds)
+    msg = "loading telonex"
+    if args.exclude_self_collected:
+        msg += " (excluding self_collected overlap)"
+    print(f"{msg} at t={args.time_seconds}s ...")
+    X_tr, Y_tr = load_telonex(args.time_seconds, exclude_self_collected=args.exclude_self_collected)
     print(f"  train n = {len(X_tr)} games")
 
     mu, sd_safe, beta_K, U, eigvals = fit_rank_k(X_tr, Y_tr, args.k)
