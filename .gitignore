@@ -27,5 +27,8 @@ data/telonex/cache/*
 data/raw_ws_logs/
 data_collection/markets/
 
+# One-off exploratory scripts and their outputs (heatmaps, sweep tables, etc).
+scratch/
+
 # Local rebuild outputs.
 /tmp_*
