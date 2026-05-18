@@ -16,7 +16,7 @@ from pathlib import Path
 
 import requests
 
-from pregame_pca import paths
+from pregame_dc import paths
 
 URL = "https://api.telonex.io/v1/datasets/polymarket/markets"
 

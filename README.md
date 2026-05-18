@@ -1,12 +1,18 @@
-# pregame_pca
+# pregame_dc
 
-A rank-3 PCR (Principal Components Regression) predictor for the outcomes of a set of 12 soccer game-related Polymarket markets (3 moneyline + 4 spread + 4 totals + 1 both teams to score), plus a live trading bot that implements a simple threshold-based trading strategy using this signal.
+A Dixon-Coles goal-model predictor for the outcomes of a set of 12 soccer game-related Polymarket markets (3 moneyline + 4 spread + 4 totals + 1 both teams to score), plus a live trading bot that implements a simple threshold-based trading strategy using this signal.
+
+> This project began as `pregame_pca`, a rank-K PCR predictor; the live model
+> is now Dixon-Coles (see below) and the package was renamed to `pregame_dc`.
+> The PCR analysis scripts remain under `analyze/`.
 
 ## Algorithm description
 
-For a given game, let $p_1,...,p_{24}$ be the best ask prices for YES and NO tokens of the 12 markets at t minutes before kickoff (default t=10). Using a dataset of ~2200 games, computes the top k (default k=3) standardized principal eigenvectors $v_1,...,v_k$. Then trains a simple linear regression of the outcome probability of the 12 markets as linear functions of the full price vector projected onto $v_1,...,v_k$.
+Each game is modelled by two latent goal rates: team A scores $n_A \sim \mathrm{Poisson}(a)$ and team B scores $n_B \sim \mathrm{Poisson}(b)$, with a Dixon-Coles low-score correction $\tau(\rho)$ that re-weights the four 0/1-goal cells to capture the well-known draw / low-score excess. Every one of the 12 markets is a fixed region of the $(n_A, n_B)$ goal lattice, so its probability is a deterministic function of $(a, b, \rho)$.
 
-The live bot implements the following strategy: at t minutes before kickoff, compute the predicted probabilities. For a chosen set of markets (default = moneyline only, I think), if the predicted probability is greater than the best ask price + threshold (default = 4 or 5 cents, I think), place a buy order (FOK) for that token.
+The rates are linear in the 24 best-ask prices through a softplus link: $a = \mathrm{softplus}(F \cdot w_a)$, $b = \mathrm{softplus}(F \cdot w_b)$, where $F$ is the z-scored 24-ask vector plus a bias. The 51 parameters $(w_a, w_b, \rho)$ are fit once, offline, by L-BFGS minimising Brier loss on ~3200 telonex games at t = −10 min (`fit_save_dc.py` → `models/dc_t-10min.npz`).
+
+The live bot implements the following strategy: at t minutes before kickoff, compute the 12 predicted probabilities. For a chosen set of markets (default = moneyline + totals), if the firing rule clears `--threshold`, place a buy order (FOK) for that token. The firing rule is either `edge = pred − ask` or `ratio = edge / max(book_spread, 0.005)` (default).
 
 ## Data sources
 
@@ -25,27 +31,23 @@ python -m venv .venv
 source .venv/bin/activate
 pip install -e .
 
-# Reproduce the OOS R² ≈ +3.8% result at three pregame per_game_data
-python -m pregame_pca.analyze.cross_eval_self_collected_multi_t
+# Train + save the live model (Dixon-Coles at t = −10 min, on full telonex).
+python -m pregame_dc.live.fit_save_dc
 
-# Calibration plots
-python -m pregame_pca.analyze.calibration_plots
-python -m pregame_pca.analyze.calibration_plots_per_market
-
-# Train + save model parameters (defaults: K=4 PCR at t = −10 min, on full telonex)
-python -m pregame_pca.live.fit_save_model
+# Run the live trading bot (dry-run by default; see Live trading below).
+python -m pregame_dc.live.bot
 ```
 
 ## Layout
 
 ```
-pregame_pca/
+pregame_dc/
     paths.py                     central path constants
     constants.py                 MARKET_LABELS, X_COLS, Y_COLS, S_COLS
     analyze/                     OOS eval, calibration, plotting
     live/                        live Polymarket trading bot
-        bot.py                   main asyncio bot
-        fit_save_model.py        rank-3 PCR training + .npz save
+        bot.py                   main asyncio Dixon-Coles bot
+        fit_save_dc.py           Dixon-Coles training + .npz save
         clob_v2.py               CLOB v2 EIP-712 signing
         resolve_outcomes.py      post-game backfill of outcomes/PnL
     pipelines/                   data builders
@@ -59,7 +61,8 @@ pregame_pca/
         slots.py                 standard_slot_map (canonical slot ordering)
         complete_sets.py         constraint primitives
     polymarket/                  Polymarket SDK (CLOB + WS)
-    models/                      shipped trained model parameters (.npz)
+    models/                      Dixon-Coles model + shipped .npz
+        dixon_coles.py           DC goal model: fit + predict + .npz loader
 
 data/
     labeled/
@@ -96,38 +99,95 @@ Consumers reconstruct the 24-element outcome vector via
 The 12 canonical slots are: A win, B win, Draw, A −1.5, B −1.5, A −2.5,
 B −2.5, Over 1.5, Over 2.5, Over 3.5, Over 4.5, BTTS.
 
+## Out-of-sample evaluation
+
+`pregame_dc/analyze/cross_eval_self_collected_dc.py` is the held-out check on
+the Dixon-Coles model:
+
+```bash
+python -m pregame_dc.analyze.cross_eval_self_collected_dc
+```
+
+**What it does.** It fits a *fresh* Dixon-Coles model on the telonex games
+whose slugs do **not** appear in the self_collected dataset, then scores it on
+the self_collected games. ~96.5% of self_collected games are also in telonex
+(same Polymarket games, different data feeds), so excluding every
+self_collected slug from training makes the evaluation genuinely held out by
+game identity. This is a *separate* fit from the shipped
+`models/dc_t-10min.npz` — the shipped model trains on the full telonex set and
+therefore cannot be honestly backtested (see [Models](#models)); this script
+exists precisely to give an honest out-of-sample number.
+
+**Apples-to-apples across data feeds.** The eval games are loaded from both
+feeds and inner-joined on `game_slug`. Every metric is computed twice — once
+scoring the self_collected asks, once the telonex asks — but always over the
+same set of cells where *both* feeds carry a real quote (~94%). If the two
+reports agree, the result is not an artefact of one feed's quirks.
+
+**Reading the output.** A fit line reports the held-out training size, the
+fitted `rho`, and the training Brier. Then, for each of the two paired reports:
+
+- `Mean Brier (12 YES)` — mean Brier over the 12 YES markets for the base rate
+  (predict the training mean) versus Dixon-Coles, plus the implied R². Lower DC
+  Brier / positive R² means the model beats the base rate.
+- The threshold table — the **edge firing rule** applied to the eval set: for
+  each threshold, buy every token whose `pred − ask` exceeds it, paying the
+  ask. Cells are `n / pnl-per-trade` with `pnl = outcome − ask`, shown as
+  aggregate (`agg`) and by market type (`mny` moneyline, `spr` spread, `tot`
+  totals, `btts`). This is in-eval PnL — equal-weighted unit trades, no
+  transaction costs beyond the ask — so treat it as signal diagnostics, not a
+  trading P&L.
+
+A companion script, `cross_eval_best_of_dc.py`, uses the same training split
+(telonex minus self_collected) but validates on the **best_of** feed — telonex
+with each sentinel ask patched from self_collected where available, the
+cleanest eval feed. It is held out by the same game-identity argument and
+prints the same Brier / R² / threshold-table output for a single feed.
+
+These two `cross_eval_*_dc.py` files are the DC-aware scripts under `analyze/`.
+The legacy PCR scripts (`cross_eval_self_collected_clean.py`, the
+`calibration_*` and `backtest_*` scripts) are unchanged and still evaluate
+rank-K PCR — they are *not* DC.
+
 ## Live trading
 
 ```bash
 # Dry run (default, no real orders)
-python -m pregame_pca.live.bot
+python -m pregame_dc.live.bot
 
 # Real orders (requires .env with POLYMARKET_PRIVATE_KEY + POLYMARKET_FUNDER_ADDRESS).
-# Defaults: rule=ratio, threshold=1.0, res-norm-min=2.25, model=rank4_t-10min.npz.
-python -m pregame_pca.live.bot --live --budget 100
+# Defaults: rule=ratio, threshold=4.0, markets=moneyline,totals, model=dc_t-10min.npz.
+python -m pregame_dc.live.bot --live --budget 100
 
 # After games resolve, backfill outcomes
-python -m pregame_pca.live.resolve_outcomes
+python -m pregame_dc.live.resolve_outcomes
 ```
 
 The bot:
 1. Discovers upcoming soccer games via Gamma every hour
 2. Subscribes to all candidate token books via the Polymarket Market WS
-3. At `kickoff + --time-seconds` for each game, computes the rank-K
-   prediction (default K=4) over the 24 token asks and the residual-norm of
-   the z-scored ask vector against the top-K eigenvector subspace
-4. If `res_norm < --res-norm-min`, skips the whole game (the snapshot sits
-   too close to the "on-manifold" subspace where the strategy is unprofitable)
-5. Otherwise for each candidate slot (filtered by `--markets`) where the
-   score exceeds `--threshold` — `pred − ask` under `--rule=edge` or
-   `(pred − ask) / max(book_spread, 0.005)` under `--rule=ratio` (default) —
-   posts a FOK buy via the CLOB v2 endpoint
+3. At `kickoff + --time-seconds` for each game, computes the 12 Dixon-Coles
+   market probabilities from the 24 token asks
+4. For each candidate slot (filtered by `--markets`, default moneyline +
+   totals) where the score exceeds `--threshold` — `pred − ask` under
+   `--rule=edge` or `(pred − ask) / max(book_spread, 0.005)` under
+   `--rule=ratio` (default) — posts a FOK buy via the CLOB v2 endpoint
 
-Logs:
-- `logs/orders_summary.jsonl` — one line per attempted order
-- `logs/orders_summary_resolved.jsonl` — augmented with outcomes & PnL
-- `logs/ws_events_master.jsonl` — all user-WS events
-- `logs/ws_events/{slug}_{slot}_{ts}.jsonl` — per-order event teеs
+Unlike the former PCR bot there is no `res_norm` gate: Dixon-Coles has no
+principal-component subspace, so every discovered game is evaluated and the
+threshold alone decides what fires.
+
+Logs — each run stamps its files with its UTC start time (`<run>` =
+`YYYYMMDDThhmmssZ`), so a new run never overwrites or interleaves with an
+earlier one:
+- `logs/orders_summary_<run>.jsonl` — one line per attempted order
+- `logs/kickoffs_<run>.jsonl` — one line per processed kickoff
+- `logs/ws_events_master_<run>.jsonl` — all user-WS events
+- `logs/ws_events/{slug}_{slot}_{ts}.jsonl` — per-order event tees
+- `logs/orders_summary_resolved.jsonl` — `resolve_outcomes` output: every
+  run's orders combined and augmented with outcomes & PnL
+- `logs/state.json` — cross-run record of already-processed kickoffs (shared,
+  not stamped, so a restart does not re-fire games it already handled)
 
 ## Rebuilding datasets from scratch
 
@@ -136,9 +196,9 @@ analysis and live trading. To regenerate the labeled parquets (e.g. after
 adding new games to the per_game_data directories):
 
 ```bash
-python -m pregame_pca.pipelines.build_labeled_dataset \
+python -m pregame_dc.pipelines.build_labeled_dataset \
     --source self_collected --output data/labeled/self_collected_dataset.parquet
-python -m pregame_pca.pipelines.build_labeled_dataset \
+python -m pregame_dc.pipelines.build_labeled_dataset \
     --source telonex --output data/labeled/telonex_dataset.parquet
 ```
 
@@ -175,7 +235,7 @@ python -m data_collection.telonex.build_dataset
 # Reconstruct data/telonex/games.csv from the per-game parquets + telonex
 # markets.parquet + the kickoff cache. Triggers the kickoff resolver if any
 # per-game parquet lacks a cached kickoff.
-python -m pregame_pca.pipelines.build_telonex_games_csv
+python -m pregame_dc.pipelines.build_telonex_games_csv
 
 # Fetch resolved-market outcomes from Gamma into data/outcomes.parquet.
 # Reads market_ids from data/{self_collected,telonex}/games.csv (written by
@@ -186,21 +246,26 @@ python -m data_collection.fetch_outcomes
 
 Once `data/{self_collected,telonex}/per_game_data/` are populated and
 `data/outcomes.parquet` covers their markets, run
-`pregame_pca.pipelines.build_labeled_dataset` (above) to regenerate the
+`pregame_dc.pipelines.build_labeled_dataset` (above) to regenerate the
 labeled parquets.
 
 ## Models
 
-Trained model artifacts in `pregame_pca/models/`:
+Trained model artifacts live in `pregame_dc/models/`:
 
-- `rank4_t-10min.npz` — **current recommended live-trading model**: K=4 PCR
-  fit at t = −10 min on the full telonex dataset (train n = 3232). Used in
-  conjunction with the `res_norm > 2.25` and `edge/book_spread > 1.0` firing
-  rule (see `pregame_pca/live/bot.py`).
-- `rank3_t-10min.npz`, `rank3_t-25min.npz` — legacy K=3 models (former
-  deployment). Retained for reproducibility of older backtests.
+- `dc_t-10min.npz` — **current live-trading model**: Dixon-Coles fit at
+  t = −10 min on the full telonex dataset (train n = 3232), Brier loss.
+  Produced by `python -m pregame_dc.live.fit_save_dc`.
+- `rank4_t-10min.npz`, `rank3_t-*.npz` — legacy PCR models from the former
+  deployment. Retained for reproducibility of older backtests; not used by
+  the current bot.
 
-Each `.npz` carries `mu` (24,), `sd_safe` (24,), `beta_K` (24, 25),
-`U` (24, 24), `eigvals` (24,), and provenance scalars `T_TARGET`, `K`,
-`train_n`. The bot reads `mu`, `sd_safe`, `beta_K`, `U` at inference (the
-last for computing `res_norm`).
+The Dixon-Coles `.npz` carries `mu` (24,), `sd_safe` (24,), `w_a` (25,),
+`w_b` (25,), `rho` (scalar), and provenance fields `loss`, `T_TARGET`,
+`train_n`. The bot loads it via
+`pregame_dc.models.dixon_coles.DixonColesModel`.
+
+Note: the shipped model trains on the *full* telonex set, so it cannot be
+honestly backtested against games it has seen. An out-of-sample backtest
+must fit a separate model with the evaluation games excluded (e.g.
+`fit_save_dc.py --exclude-self-collected`).

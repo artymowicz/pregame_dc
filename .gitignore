@@ -27,6 +27,9 @@ data/telonex/cache/*
 data/raw_ws_logs/
 data_collection/markets/
 
+# Multi-GB raw snapshot archives — too large for GitHub.
+data/snapshots*.zip
+
 # One-off exploratory scripts and their outputs (heatmaps, sweep tables, etc).
 scratch/
 

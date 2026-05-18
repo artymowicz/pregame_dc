@@ -4,7 +4,7 @@ The labeled-dataset builder reads `data/outcomes.parquet` to map each canonical
 slot's market_id to its resolved YES-side price (0/1). The shipped file covers
 games seen at export time; new games collected via data_collection/ need their
 outcomes appended here before they show up in
-`pregame_pca.pipelines.build_labeled_dataset`.
+`pregame_dc.pipelines.build_labeled_dataset`.
 
 Source of market_ids is the union of:
     data/self_collected/games.csv   (written by data_collection.self_collected.build_dataset)
@@ -34,7 +34,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
-from pregame_pca import paths
+from pregame_dc import paths
 
 GAMMA_URL = "https://gamma-api.polymarket.com/markets/{id}"
 
@@ -112,13 +112,13 @@ def main():
                     for r in df.itertuples(index=False)}
         already_resolved = sum(
             1 for mid in ids
-            if mid in existing and existing[mid].get("final_price") is not None
+            if mid in existing and pd.notna(existing[mid].get("final_price"))
         )
         print(f"resumable: {len(existing)} previously-fetched, "
               f"{already_resolved} resolved")
 
     todo = [mid for mid in ids
-            if mid not in existing or existing[mid].get("final_price") is None]
+            if mid not in existing or pd.isna(existing[mid].get("final_price"))]
     if args.limit:
         todo = todo[:args.limit]
     print(f"to fetch: {len(todo)}")
@@ -129,7 +129,7 @@ def main():
 
     results = dict(existing)
     session = requests.Session()
-    session.headers["User-Agent"] = "pregame_pca-data_collection/1.0"
+    session.headers["User-Agent"] = "pregame_dc-data_collection/1.0"
 
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:

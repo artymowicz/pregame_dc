@@ -11,9 +11,9 @@ OLS-with-ridge fit of `y = β x` where:
 - **columns** = covariance-eigenvector basis of z-scored asks (PC1..PC24)
   + final `bias` column for the intercept.
 
-Run with `python -m strategies.pregame_pca.regression --ridge 1000`.
-Source CSV: `strategies/pregame_pca/beta_token_x_pc_ridge1000.csv`.
-Heatmap: `strategies/pregame_pca/plots/beta_token_x_pc_ridge1000.png`.
+Run with `python -m strategies.pregame_dc.regression --ridge 1000`.
+Source CSV: `strategies/pregame_dc/beta_token_x_pc_ridge1000.csv`.
+Heatmap: `strategies/pregame_dc/plots/beta_token_x_pc_ridge1000.png`.
 
 ## Why α = 1000
 

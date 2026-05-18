@@ -46,7 +46,7 @@ project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from pregame_pca.polymarket.soccer import classify_market_type, parse_game_date_slug
+from pregame_dc.polymarket.soccer import classify_market_type, parse_game_date_slug
 
 from data_collection.telonex.client import TelonexError, download_quotes
 

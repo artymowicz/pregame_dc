@@ -1,4 +1,4 @@
-# pregame_pca — findings
+# pregame_dc — findings
 
 ## Setup
 
@@ -10,9 +10,9 @@
 - **Sample**: telonex `train` split, fully-stale rows dropped (every ask = 1.0).
   **n = 2,107 games**. (self_collected was excluded after 2026-05-01 because of a known
   pipeline bug being fixed in a parallel session.)
-- **Script**: `python -m strategies.pregame_pca.diagnostic
+- **Script**: `python -m strategies.pregame_dc.diagnostic
   [--standardize] [--sources {self_collected,telonex}...] [--log-prices]`
-- **Plots**: `strategies/pregame_pca/plots/{covariance,correlation,scree,top_eigenvectors,top_eigenvectors_heatmap}{,_telonex,_log,_std}.png`
+- **Plots**: `strategies/pregame_dc/plots/{covariance,correlation,scree,top_eigenvectors,top_eigenvectors_heatmap}{,_telonex,_log,_std}.png`
   (combinations of source / log / std flags get appended into the suffix)
 
 ## Per-feature stats at t = −10 (telonex)

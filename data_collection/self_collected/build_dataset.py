@@ -36,8 +36,8 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 from data_collection.self_collected.filtering import filter_self_collected
-from pregame_pca.polymarket.sdk import MarketTracker
-from pregame_pca.polymarket.soccer import SPORTS_TYPE_MAP, parse_game_slug as _parse_game_slug
+from pregame_dc.polymarket.sdk import MarketTracker
+from pregame_dc.polymarket.soccer import SPORTS_TYPE_MAP, parse_game_slug as _parse_game_slug
 
 # self_collected side encoding → WS format (matches scripts/backtest_arb_monitor_self_collected.py:48)
 _SIDE_STR = {0: "BUY", 1: "SELL"}

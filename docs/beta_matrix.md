@@ -16,8 +16,8 @@ PC1 26.9% · PC2 21.8% · PC3 16.1% · PC4 4.4% · PC5 3.9% · PC6 3.4% ·
 PC7 3.0% · PC8 2.9% · PC9 2.7% · PC10 2.4% · PC11–PC18 each 0.4–2.3%
 (noise floor) · PC19–PC24 each <0.5%.
 
-Source CSV: `strategies/pregame_pca/beta_token_x_pc.csv`.
-Heatmap: `strategies/pregame_pca/plots/beta_token_x_pc.png`.
+Source CSV: `strategies/pregame_dc/beta_token_x_pc.csv`.
+Heatmap: `strategies/pregame_dc/plots/beta_token_x_pc.png`.
 
 | token | PC1 | PC2 | PC3 | PC4 | PC5 | PC6 | PC7 | PC8 | PC9 | PC10 | PC11 | PC12 | PC13 | PC14 | PC15 | PC16 | PC17 | PC18 | PC19 | PC20 | PC21 | PC22 | PC23 | PC24 | bias |
 |:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|

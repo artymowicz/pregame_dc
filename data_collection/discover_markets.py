@@ -1,8 +1,8 @@
 """Discover soccer markets and write the CSV that ws_logger consumes.
 
 Trimmed replacement for strategies.arb_monitor.discovery.run_domain in the
-source monorepo, restricted to the single domain pregame_pca cares about
-(soccer). Reuses pregame_pca.discovery.soccer.fetch_markets so we don't have
+source monorepo, restricted to the single domain pregame_dc cares about
+(soccer). Reuses pregame_dc.discovery.soccer.fetch_markets so we don't have
 to carry over the multi-sport arb_monitor.discovery module.
 """
 from __future__ import annotations
@@ -11,8 +11,8 @@ import argparse
 import csv
 from pathlib import Path
 
-from pregame_pca.discovery.soccer import fetch_markets
-from pregame_pca import paths
+from pregame_dc.discovery.soccer import fetch_markets
+from pregame_dc import paths
 
 
 CSV_FIELDS = ["id", "question", "game", "game_id", "type",

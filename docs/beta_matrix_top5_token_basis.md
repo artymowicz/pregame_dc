@@ -26,9 +26,9 @@ Per-outcome top-5 share of fitted variance:
 
 PC4 is mostly an Awin/Draw refinement; PC5 picks up the Draw structure most visibly. The biggest shift adding PCs 4–5 is on **Draw Y** (42% → 51%) — the Draw row is the only outcome whose fitted-variance share moves materially. BTTS Y stays stuck around 55%, meaning BTTS's predictive signal lives outside the top 5 PCs as well.
 
-Run: `python -m strategies.pregame_pca.regression --keep-top 5`
-Source CSV: `strategies/pregame_pca/beta_token_x_token_top5.csv`
-Heatmap: `strategies/pregame_pca/plots/beta_token_x_token_top5.png`
+Run: `python -m strategies.pregame_dc.regression --keep-top 5`
+Source CSV: `strategies/pregame_dc/beta_token_x_token_top5.csv`
+Heatmap: `strategies/pregame_dc/plots/beta_token_x_token_top5.png`
 
 ## How to read it
 

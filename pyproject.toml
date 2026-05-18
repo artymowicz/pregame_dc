@@ -1,5 +1,5 @@
 [project]
-name = "pregame_pca"
+name = "pregame_dc"
 version = "0.1.0"
 description = "Rank-3 PCR pregame predictor + live Polymarket bot for soccer 12-market baskets"
 requires-python = ">=3.11"
@@ -28,4 +28,4 @@ requires = ["setuptools>=64"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["pregame_pca*", "data_collection*"]
+include = ["pregame_dc*", "data_collection*"]

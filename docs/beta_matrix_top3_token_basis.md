@@ -7,9 +7,9 @@ OLS fit of `y = β x` (z-scored asks + bias), with all PC columns *except the to
 - Reconstruction: zero PC4..PC24 columns of `β_eig`, then `β_token = β_eig_truncated[:, :24] @ U^T` (since `U` is orthogonal, `U^{-1} = U^T`). Bias column unchanged.
 - Top 3 PCs explain 64.8% of feature variance (sum of standardized eigenvalues 6.46 + 5.24 + 3.85 / trace 24) and 80.9% of aggregated fitted-prediction variance (`Σ_{k=1..3} β_pc[i,k]² · λ_k / Σ_{k=1..24} β_pc[i,k]² · λ_k`, summed across outcomes). Per-outcome share ranges from 42% (Draw) and 55% (BTTS) up to 92% (A-1.5) — outcomes aligned with the tilt and totals axes are well-captured; Draw and BTTS depend on directions outside the top 3.
 
-Run: `python -m strategies.pregame_pca.regression --keep-top 3`
-Source CSV: `strategies/pregame_pca/beta_token_x_token_top3.csv`
-Heatmap: `strategies/pregame_pca/plots/beta_token_x_token_top3.png`
+Run: `python -m strategies.pregame_dc.regression --keep-top 3`
+Source CSV: `strategies/pregame_dc/beta_token_x_token_top3.csv`
+Heatmap: `strategies/pregame_dc/plots/beta_token_x_token_top3.png`
 
 ## How to read it
 

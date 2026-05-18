@@ -145,11 +145,11 @@ from datetime import datetime, timezone, date
 import h5py
 import numpy as np
 
-from pregame_pca.polymarket.sdk import MarketWebSocket, SportsWebSocket
-from pregame_pca import paths
+from pregame_dc.polymarket.sdk import MarketWebSocket, SportsWebSocket
+from pregame_dc import paths
 from data_collection.discover_markets import discover_soccer_markets
 
-# Soccer is the only domain pregame_pca supports. The "SPORTS" WS channel
+# Soccer is the only domain pregame_dc supports. The "SPORTS" WS channel
 # carries gameId-keyed live updates that we only filter on for sports
 # domains; this set keeps the logic explicit (formerly came from
 # strategies/arb_monitor/domains/__init__.py:SPORTS).
@@ -887,7 +887,7 @@ def main():
                              "discovery at startup")
     args = parser.parse_args()
 
-    # pregame_pca only supports soccer; the rest of ws_logger threads `domain`
+    # pregame_dc only supports soccer; the rest of ws_logger threads `domain`
     # through registry/HDF5 paths so we keep the variable but hardcode it.
     domain = "soccer"
 

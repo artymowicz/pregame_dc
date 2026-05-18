@@ -17,8 +17,8 @@ no `--standardize`):
 PC1 32.8% (eig 0.29) · PC2 16.4% (0.14) · PC3 12.8% (0.11) ·
 PC4 8.8% (0.08) · PC5 6.9% (0.06) · PC6 5.3% · ... · PC24 ~0%.
 
-Source CSV: `strategies/pregame_pca/beta_token_x_pc_raw.csv`.
-Heatmap: `strategies/pregame_pca/plots/beta_token_x_pc_raw.png`.
+Source CSV: `strategies/pregame_dc/beta_token_x_pc_raw.csv`.
+Heatmap: `strategies/pregame_dc/plots/beta_token_x_pc_raw.png`.
 
 | token | PC1 | PC2 | PC3 | PC4 | PC5 | PC6 | PC7 | PC8 | PC9 | PC10 | PC11 | PC12 | PC13 | PC14 | PC15 | PC16 | PC17 | PC18 | PC19 | PC20 | PC21 | PC22 | PC23 | PC24 | bias |
 |:---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
