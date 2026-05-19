@@ -1,10 +1,11 @@
 [project]
 name = "pregame_dc"
 version = "0.1.0"
-description = "Rank-3 PCR pregame predictor + live Polymarket bot for soccer 12-market baskets"
+description = "Dixon-Coles pregame predictor + live Polymarket bot for soccer 12-market baskets"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
+    "scipy",
     "pandas",
     "pyarrow",
     "matplotlib",

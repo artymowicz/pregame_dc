@@ -1,0 +1,68 @@
+# Hardened systemd unit for the Pregame Dixon-Coles live trading bot.
+#
+# Install on the host:
+#   sudo cp /opt/pregame_dc/deploy/pregame-dc-bot.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now pregame-dc-bot
+#
+# Assumes: repo at /opt/pregame_dc, venv at /opt/pregame_dc/.venv, a dedicated
+# unprivileged `pregamedc` user owning the tree, /opt/pregame_dc/logs created,
+# and /opt/pregame_dc/.env (chmod 600) holding the wallet credentials.
+# See deploy/README.md.
+
+[Unit]
+Description=Pregame Dixon-Coles live trading bot
+After=network-online.target
+Wants=network-online.target
+# Crash-loop guard: >5 restarts in 5 min => stop trying and enter `failed`
+# instead of thrashing forever on a real bug.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=pregamedc
+Group=pregamedc
+WorkingDirectory=/opt/pregame_dc
+ExecStart=/opt/pregame_dc/.venv/bin/python -m pregame_dc.live.bot --live --rule edge --threshold 0.04
+Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+
+# --- restart policy ---
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+# The bot catches KeyboardInterrupt for a clean shutdown; SIGINT hits that
+# path. Plain SIGTERM would hard-kill it mid-WebSocket.
+KillSignal=SIGINT
+
+# --- resource cap: OOM the service, not the whole VM ---
+MemoryMax=1536M
+
+# --- filesystem sandbox ---
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/pregame_dc/logs
+PrivateTmp=true
+
+# --- privilege / kernel sandbox ---
+NoNewPrivileges=true
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Relax this one FIRST if the bot fails to start (check `journalctl`):
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target
