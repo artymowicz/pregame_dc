@@ -183,6 +183,34 @@ def _slot_label(slot: int) -> tuple[str, str, str]:
     return mt, MARKET_LABELS[base], side
 
 
+# ---- stdout/stderr tee --------------------------------------------------
+
+class _Tee:
+    """Write-through wrapper that forwards writes to several streams at once.
+
+    Used to copy the bot's stdout/stderr into a per-run log file while still
+    letting it reach the console / systemd journal. Attribute access other
+    than write()/flush() delegates to the primary (first) stream, so it stays
+    drop-in compatible with the real stream (isatty, encoding, fileno, ...).
+    """
+
+    def __init__(self, primary, *extra):
+        self._primary = primary
+        self._streams = [s for s in (primary, *extra) if s is not None]
+
+    def write(self, data):
+        for s in self._streams:
+            s.write(data)
+        return len(data)
+
+    def flush(self):
+        for s in self._streams:
+            s.flush()
+
+    def __getattr__(self, name):
+        return getattr(self._primary, name)
+
+
 # ---- per-order WS event recorder ---------------------------------------
 
 class WsRecorder:
@@ -259,6 +287,16 @@ def _canonical_market_ids(game_markets) -> list[int] | None:
 class PregameDCBot:
     def __init__(self, args):
         self.args = args
+        # First thing: stamp this run and tee stdout + stderr into a per-run
+        # log file, so the console output is saved on disk alongside the JSONL
+        # logs (and still reaches the systemd journal). Done up front so it
+        # captures every line the bot prints, including the [init] lines below.
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        self.run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.stdout_log = LOGS_DIR / f"stdout_{self.run_stamp}.log"
+        self._stdout_fh = open(self.stdout_log, "a", buffering=1)
+        sys.stdout = _Tee(sys.stdout, self._stdout_fh)
+        sys.stderr = _Tee(sys.stderr, self._stdout_fh)
         self.live = bool(args.live)
         self.budget = float(args.budget)
         self.threshold = float(args.threshold)
@@ -286,13 +324,11 @@ class PregameDCBot:
                   f"using bot value but predictions may be miscalibrated")
 
         # Logging & state
-        LOGS_DIR.mkdir(parents=True, exist_ok=True)
         WS_EVENTS_DIR.mkdir(parents=True, exist_ok=True)
-        # Per-run log files: stamp each log with this run's UTC start time so a
-        # fresh run never overwrites — or interleaves with — an earlier run's
-        # output. STATE_FILE is deliberately NOT stamped: it is cross-run memory
-        # of which kickoffs have already been processed.
-        self.run_stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        # Per-run log files: stamped with this run's UTC start time (run_stamp,
+        # set at the top of __init__) so a fresh run never overwrites — or
+        # interleaves with — an earlier run's output. STATE_FILE is deliberately
+        # NOT stamped: it is cross-run memory of which kickoffs were processed.
         self.orders_log = LOGS_DIR / f"orders_summary_{self.run_stamp}.jsonl"
         self.kickoffs_log = LOGS_DIR / f"kickoffs_{self.run_stamp}.jsonl"
         self.ws_master_log = LOGS_DIR / f"ws_events_master_{self.run_stamp}.jsonl"
@@ -961,7 +997,8 @@ class PregameDCBot:
               f"rule={self.rule}, threshold={self.threshold}, "
               f"t_offset={self.t_offset}s, model={self.args.model})")
         print(f"[{now_str()}] run logs: {self.orders_log.name}  "
-              f"{self.kickoffs_log.name}  {self.ws_master_log.name}")
+              f"{self.kickoffs_log.name}  {self.ws_master_log.name}  "
+              f"{self.stdout_log.name}")
 
         await self.discover_and_schedule()
         asyncio.create_task(self._periodic_discovery())

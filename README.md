@@ -184,6 +184,7 @@ earlier one:
 - `logs/kickoffs_<run>.jsonl` — one line per processed kickoff
 - `logs/ws_events_master_<run>.jsonl` — all user-WS events
 - `logs/ws_events/{slug}_{slot}_{ts}.jsonl` — per-order event tees
+- `logs/stdout_<run>.log` — full console output (stdout + stderr) for the run
 - `logs/orders_summary_resolved.jsonl` — `resolve_outcomes` output: every
   run's orders combined and augmented with outcomes & PnL
 - `logs/state.json` — cross-run record of already-processed kickoffs (shared,
