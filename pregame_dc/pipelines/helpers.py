@@ -176,6 +176,17 @@ def pivot_per_game_data(snap_df, slot_market_ids, n_samples=0, bucket_s=30,
             mask = np.concatenate([bucket_ids[:-1] != bucket_ids[1:], [True]])
             wide = wide[mask]
 
+    # Drop pure no-info rows: every slot has the sentinel (best_ask=1.0,
+    # best_ask_size=0.0), meaning ffill found no quote for any market at that
+    # grid point. Pre-game these are unambiguously empty; post-game it's
+    # vanishingly rare for every slot's book to be one-sided simultaneously.
+    if len(wide) > 0:
+        x_arr = wide.iloc[:, :24].values
+        s_arr = wide.iloc[:, 24:].values
+        no_info = (x_arr == 1.0).all(axis=1) & (s_arr == 0.0).all(axis=1)
+        if no_info.any():
+            wide = wide.iloc[~no_info]
+
     if n_samples > 0 and len(wide) > n_samples:
         idx = np.linspace(0, len(wide) - 1, n_samples).round().astype(int)
         wide = wide.iloc[idx]
