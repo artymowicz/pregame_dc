@@ -421,9 +421,14 @@ def resolve_market_id(condition_id, cache_map):
 
 def _utc_dates_for_window(kickoff_ts, pre_s, post_s):
     """Return sorted list of YYYY-MM-DD strings covering every UTC day touched
-    by [kickoff - pre_s, kickoff + post_s]."""
+    by [kickoff - pre_s, kickoff + post_s). Upper bound is effectively
+    exclusive: a window ending exactly at 00:00 UTC excludes that day (it
+    contributes zero useful seconds and risks a spurious 404)."""
     d = datetime.fromtimestamp(kickoff_ts - pre_s, tz=timezone.utc).date()
-    end = datetime.fromtimestamp(kickoff_ts + post_s, tz=timezone.utc).date()
+    win_hi_dt = datetime.fromtimestamp(kickoff_ts + post_s, tz=timezone.utc)
+    end = win_hi_dt.date()
+    if win_hi_dt.time() == datetime.min.time():
+        end -= timedelta(days=1)
     out = []
     while d <= end:
         out.append(d.strftime("%Y-%m-%d"))
