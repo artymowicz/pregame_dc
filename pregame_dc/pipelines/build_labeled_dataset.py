@@ -16,15 +16,36 @@ from __future__ import annotations
 
 import argparse
 import time
+from collections import Counter
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 from pregame_dc import paths
 from pregame_dc.pipelines.helpers import (
     PRE_GAME_MIN, POST_GAME_MIN,
     collect_games, load_per_game_data, pivot_per_game_data, split_by_hash,
 )
+
+
+def _build_condition_id_index(snap_dir: Path) -> dict[str, Path]:
+    """Return {condition_id: parquet_path} indexing every per_game_data parquet.
+
+    Matching games to their parquet by condition_id (rather than by slug) is
+    robust to multi-meeting fixtures (same un-dated slug, different dates) and
+    to parquet date-name mismatches (Polymarket event_slug date vs. game_start
+    UTC date can differ for late-UTC kickoffs).
+    """
+    index: dict[str, Path] = {}
+    for path in sorted(snap_dir.glob("*.parquet")):
+        try:
+            cids = pq.read_table(path, columns=["condition_id"]).to_pandas()
+            for cid in cids["condition_id"].unique():
+                index.setdefault(cid, path)
+        except Exception:
+            continue
+    return index
 
 
 def main():
@@ -43,6 +64,11 @@ def main():
     games = collect_games(games_csv)
     print(f"  {len(games)} eligible {source} games")
 
+    print(f"indexing per_game_data parquets by condition_id ...")
+    cid_index = _build_condition_id_index(snap_dir)
+    print(f"  {len(cid_index):,} condition_ids across "
+          f"{len(set(cid_index.values()))} parquets")
+
     rows = []
     n_no_snap = n_empty = n_kept = 0
     n_total = len(games)
@@ -50,13 +76,14 @@ def main():
     REPORT_EVERY_S = 5.0
 
     for i, (slug, g) in enumerate(games.items()):
-        snap_path = snap_dir / f"{slug}.parquet"
-        if not snap_path.exists():
-            alt = list(snap_dir.glob(f"{slug}*.parquet"))
-            if not alt:
-                n_no_snap += 1
-                continue
-            snap_path = alt[0]
+        # Pick the parquet by condition_id: count, per parquet, how many of
+        # this game's expected condition_ids it contains, and take the best.
+        expected_cids = set(g["games_subset"]["condition_id"])
+        matches = Counter(cid_index[c] for c in expected_cids if c in cid_index)
+        if not matches:
+            n_no_snap += 1
+            continue
+        snap_path, _ = matches.most_common(1)[0]
         snap = load_per_game_data(source, snap_path)
         if snap is None or snap.empty:
             n_empty += 1

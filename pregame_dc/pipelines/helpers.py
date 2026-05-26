@@ -91,18 +91,31 @@ def collect_games(games_csv: Path) -> dict[str, dict]:
     outcomes["market_id"] = outcomes["market_id"].astype("int64")
     out_map = dict(zip(outcomes["market_id"], outcomes["final_price"]))
 
+    # Group by (game_slug, game_start_ts) so that the same un-dated slug
+    # representing multiple meetings between the same teams in one season
+    # produces multiple distinct game entries (rather than canonical_slot
+    # picking 12 markets arbitrarily from across meetings).
+    n_meetings = games_df.groupby("game_slug")["game_start_ts"].nunique()
+
     kept: dict[str, dict] = {}
-    for slug, grp in games_df.groupby("game_slug"):
+    for (slug, gst), grp in games_df.groupby(["game_slug", "game_start_ts"]):
         mids = canonical_slot_market_ids(grp.to_dict("records"))
         if mids is None:
             continue
         ys = slot_outcomes_for_game(mids, out_map)
         if ys is None:
             continue
-        kept[slug] = {
+        # Disambiguate the key by UTC date only for multi-meeting slugs, to
+        # preserve backward-compat keys for the common single-meeting case.
+        if n_meetings[slug] > 1:
+            utc_date = pd.Timestamp(int(gst), unit="s", tz="UTC").strftime("%Y-%m-%d")
+            key = f"{slug}-{utc_date}"
+        else:
+            key = slug
+        kept[key] = {
             "slot_mids": mids,
             "slot_outcomes": ys,
-            "game_start_ts": int(grp["game_start_ts"].iloc[0]),
+            "game_start_ts": int(gst),
             "games_subset": grp,
         }
     return kept
