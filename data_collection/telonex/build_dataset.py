@@ -10,13 +10,13 @@ Outputs:
     data/telonex/cache/skipped_unknown_kickoff.txt
         — games skipped because no kickoff was resolvable
 
-Streaming architecture: per-game, downloads ≤12 YES-side `quotes` files
-concurrently into a tmpdir, clips each to [last-update-before-window,
-kickoff+3.5h] so the last pre-window quote seeds downstream ffill,
-appends to an in-memory game buffer, and deletes the raw file immediately.
+Streaming architecture: per-game, per-market, downloads every UTC daily
+`quotes` file overlapping [kickoff - pre_hours, kickoff + post_hours]
+(default 24h pre / 4h post), concats them, clips to [last-update-before-window,
+kickoff + post_hours] so the last pre-window quote seeds downstream ffill,
+appends to an in-memory game buffer, and deletes each raw file immediately.
 When all markets are processed, synthesizes NO rows via YES/NO complementarity
-and writes the per-game parquet. Peak disk ≈ `parallel × avg_file_size`
-(≈ 3 MB at --parallel=10).
+and writes the per-game parquet.
 
 Usage:
     python -m pipelines.telonex.build_dataset --games aus-vic-new-2026-04-17 --dry-run
@@ -33,7 +33,7 @@ import tempfile
 import time
 import zlib
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -91,7 +91,8 @@ def discover_games(markets_path, start_date=None, end_date=None, games_filter=No
     t0 = time.time()
 
     cols = ["slug", "event_slug", "question", "tags",
-            "asset_id_0", "asset_id_1", "market_id", "status"]
+            "asset_id_0", "asset_id_1", "market_id", "status",
+            "created_at_us", "quotes_from", "quotes_to"]
     table = pq.read_table(markets_path, columns=cols)
     df = table.to_pandas()
 
@@ -157,6 +158,9 @@ def discover_games(markets_path, start_date=None, end_date=None, games_filter=No
                 "asset_id_yes": row["asset_id_0"],
                 "condition_id": row["market_id"],
                 "date": row["date"],
+                "created_at_us": int(row["created_at_us"]) if row["created_at_us"] else 0,
+                "quotes_from": row["quotes_from"] or "",
+                "quotes_to": row["quotes_to"] or "",
             })
         if markets:
             games[gds] = markets
@@ -415,18 +419,23 @@ def resolve_market_id(condition_id, cache_map):
 # Per-market download + extract
 # ---------------------------------------------------------------------------
 
-def _extract_window_frame(raw_path, market_info, kickoff_ts, window_hours, market_id_int):
-    """Load a downloaded quotes parquet, clip to [last-pre-window update,
-    window-end], cast, emit YES+NO rows."""
-    # Window in microseconds
-    pre_s = 0.5 * 3600
-    post_s = (window_hours - 0.5) * 3600
+def _utc_dates_for_window(kickoff_ts, pre_s, post_s):
+    """Return sorted list of YYYY-MM-DD strings covering every UTC day touched
+    by [kickoff - pre_s, kickoff + post_s]."""
+    d = datetime.fromtimestamp(kickoff_ts - pre_s, tz=timezone.utc).date()
+    end = datetime.fromtimestamp(kickoff_ts + post_s, tz=timezone.utc).date()
+    out = []
+    while d <= end:
+        out.append(d.strftime("%Y-%m-%d"))
+        d += timedelta(days=1)
+    return out
+
+
+def _extract_window_frame(df, market_info, kickoff_ts, pre_s, post_s, market_id_int):
+    """Clip a concatenated quotes frame to [last-pre-window update,
+    kickoff + post_s], cast, emit YES+NO rows."""
     t_lo_us = int((kickoff_ts - pre_s) * 1_000_000)
     t_hi_us = int((kickoff_ts + post_s) * 1_000_000)
-
-    df = pq.read_table(raw_path, columns=[
-        "timestamp_us", "bid_price", "bid_size", "ask_price", "ask_size"
-    ]).to_pandas()
 
     # Seed window state with the most recent pre-window update (if any), so
     # downstream ffill has a value to carry across the window start instead
@@ -479,30 +488,126 @@ def _extract_window_frame(raw_path, market_info, kickoff_ts, window_hours, marke
         "best_ask": np.concatenate([yes_ask, (1.0 - yes_bid).astype(np.float32)]),
         "best_bid_size": np.concatenate([yes_bid_size, yes_ask_size]),
         "best_ask_size": np.concatenate([yes_ask_size, yes_bid_size]),
+        "created_at_us": np.full(n * 2, market_info["created_at_us"], dtype=np.int64),
+        "quotes_from": [market_info["quotes_from"]] * (n * 2),
+        "quotes_to": [market_info["quotes_to"]] * (n * 2),
     }
     return pd.DataFrame(common)
 
 
-async def _download_market(client, api_key, sem, market_info, kickoff_ts,
-                           window_hours, market_id_int, tmpdir):
-    """Download one market's quotes file, extract windowed frame, delete raw."""
-    asset = market_info["asset_id_yes"]
-    date = market_info["date"]
+async def _download_one_day(client, api_key, sem, asset, date, tmpdir):
+    """Download one UTC daily quotes file and return its DataFrame.
+
+    Returns None on 404 (market wasn't traded that day — expected for pre/post
+    spillover dates). Other TelonexErrors propagate so the caller can decide
+    whether to skip the whole market."""
     raw_path = Path(tmpdir) / f"{asset[:16]}_{date}.parquet"
     try:
-        size = await download_quotes(client, api_key, date, asset, raw_path, sem=sem)
+        await download_quotes(client, api_key, date, asset, raw_path, sem=sem)
     except TelonexError as e:
-        print(f"    SKIP {market_info['slug']}: {e}", file=sys.stderr)
-        return None
+        if str(e).startswith("404"):
+            return None
+        raise
     try:
-        frame = _extract_window_frame(raw_path, market_info, kickoff_ts,
-                                      window_hours, market_id_int)
+        df = pq.read_table(raw_path, columns=[
+            "timestamp_us", "bid_price", "bid_size", "ask_price", "ask_size"
+        ]).to_pandas()
     finally:
         try:
             raw_path.unlink()
         except FileNotFoundError:
             pass
-    return frame
+    return df
+
+
+def _has_seed(frames, t_lo_us):
+    """True if any frame has a row with timestamp_us < t_lo_us."""
+    for d in frames:
+        if (d["timestamp_us"] < t_lo_us).any():
+            return True
+    return False
+
+
+async def _download_market(client, api_key, sem, market_info, kickoff_ts,
+                           pre_s, post_s, market_id_int, tmpdir,
+                           seed_walkback_days=7):
+    """Download every UTC daily file overlapping the window (trimmed to telonex's
+    claimed-availability range), walk back for a seed if none found in the
+    window, then clip and emit YES+NO rows.
+
+    Returns (frame_or_None, status) where status is one of:
+      ("ok",)              — frame returned (may be None if all dates were
+                             outside [quotes_from, quotes_to])
+      ("fail-404", date)   — unexpected 404 inside [quotes_from, quotes_to]
+      ("fail-error", msg)  — non-404 download error
+    No-seed after walk-back is NOT a failure: silent partial (downstream sees
+    early-window sentinels via ffill for that market)."""
+    asset = market_info["asset_id_yes"]
+    quotes_from = market_info["quotes_from"]
+    quotes_to = market_info["quotes_to"]
+    t_lo_us = int((kickoff_ts - pre_s) * 1_000_000)
+
+    # Required UTC days, trimmed to telonex's claimed availability range. Dates
+    # outside [quotes_from, quotes_to] are silently skipped (telonex says it
+    # has no archive for those days — typically because the market wasn't
+    # listed yet, or was resolved before our post-window ends).
+    required = _utc_dates_for_window(kickoff_ts, pre_s, post_s)
+    if quotes_from:
+        required = [d for d in required if d >= quotes_from]
+    if quotes_to:
+        required = [d for d in required if d <= quotes_to]
+
+    if not required:
+        return None, ("ok",)
+
+    results = await asyncio.gather(*[
+        _download_one_day(client, api_key, sem, asset, d, tmpdir)
+        for d in required
+    ], return_exceptions=True)
+
+    frames = []
+    for d, r in zip(required, results):
+        if isinstance(r, BaseException):
+            return None, ("fail-error", f"{d}: {r!r}")
+        if r is None:
+            # 404 inside claimed-availability range = real gap
+            return None, ("fail-404", d)
+        if not r.empty:
+            frames.append(r)
+
+    # Walk back serially for a seed (last update strictly before t_lo). Bounded
+    # by quotes_from (we never request a date telonex doesn't claim to cover)
+    # and by seed_walkback_days. Either bound being hit = silent partial.
+    if frames and not _has_seed(frames, t_lo_us):
+        earliest = datetime.strptime(required[0], "%Y-%m-%d").date()
+        floor = (datetime.strptime(quotes_from, "%Y-%m-%d").date()
+                 if quotes_from else None)
+        wb = earliest - timedelta(days=1)
+        for _ in range(seed_walkback_days):
+            if floor is not None and wb < floor:
+                break
+            try:
+                df = await _download_one_day(
+                    client, api_key, sem, asset,
+                    wb.strftime("%Y-%m-%d"), tmpdir)
+            except TelonexError as e:
+                return None, ("fail-error", f"walkback {wb}: {e!r}")
+            if df is None:
+                # 404 above quotes_from = real gap
+                return None, ("fail-404", f"walkback {wb.strftime('%Y-%m-%d')}")
+            if not df.empty:
+                frames.append(df)
+                if _has_seed(frames, t_lo_us):
+                    break
+            wb -= timedelta(days=1)
+
+    if not frames:
+        return None, ("ok",)
+
+    combined = pd.concat(frames, ignore_index=True)
+    frame = _extract_window_frame(combined, market_info, kickoff_ts,
+                                  pre_s, post_s, market_id_int)
+    return frame, ("ok",)
 
 
 # ---------------------------------------------------------------------------
@@ -510,7 +615,8 @@ async def _download_market(client, api_key, sem, market_info, kickoff_ts,
 # ---------------------------------------------------------------------------
 
 async def process_game(client, api_key, sem, gds, markets, kickoff_ts,
-                       window_hours, market_id_map, tmpdir, force):
+                       pre_s, post_s, market_id_map, tmpdir, force,
+                       seed_walkback_days=7):
     out_path = SNAPSHOTS_DIR / f"{gds}.parquet"
     if out_path.exists() and not force:
         return "skip-exists", 0
@@ -519,9 +625,26 @@ async def process_game(client, api_key, sem, gds, markets, kickoff_ts,
     for m in markets:
         mid = resolve_market_id(m["condition_id"], market_id_map)
         tasks.append(_download_market(client, api_key, sem, m, kickoff_ts,
-                                      window_hours, mid, tmpdir))
-    frames = await asyncio.gather(*tasks)
-    frames = [f for f in frames if f is not None]
+                                      pre_s, post_s, mid, tmpdir,
+                                      seed_walkback_days=seed_walkback_days))
+    results = await asyncio.gather(*tasks)
+
+    fails = []
+    frames = []
+    for m, (frame, status) in zip(markets, results):
+        if status[0].startswith("fail"):
+            fails.append((m["slug"], status))
+        elif frame is not None:
+            frames.append(frame)
+
+    if fails:
+        # Any market failure aborts the game — don't write a parquet.
+        # An existing parquet (e.g. from a prior run) is left untouched.
+        for slug, status in fails:
+            print(f"    FAIL {slug}: {status[0]} {status[1] if len(status)>1 else ''}",
+                  file=sys.stderr)
+        return "fail", len(fails)
+
     if not frames:
         return "no-data", 0
 
@@ -539,6 +662,9 @@ async def process_game(client, api_key, sem, gds, markets, kickoff_ts,
         ("best_ask", pa.float32()),
         ("best_bid_size", pa.float32()),
         ("best_ask_size", pa.float32()),
+        ("created_at_us", pa.int64()),
+        ("quotes_from", pa.string()),
+        ("quotes_to", pa.string()),
     ]))
     SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, out_path, compression="zstd")
@@ -578,14 +704,23 @@ async def run(args):
     print(f"[main] {len(games):,} games with kickoff resolved; "
           f"{total_markets:,} markets total", file=sys.stderr)
 
+    pre_s = args.pre_hours * 3600
+    post_s = args.post_hours * 3600
+
     if args.dry_run:
-        # Estimate size: 4h quotes ≈ 0.23 MB / active market + ~0.03 MB / btts
+        # Rough estimate: ~1.5 MB raw per full-day quotes file (active market),
+        # ~0.2 MB for btts; one download per UTC day spanned.
+        total_downloads = 0
         est_bytes = 0
-        for markets in games.values():
+        for gds, markets in games.items():
+            n_days = len(_utc_dates_for_window(kickoffs[gds], pre_s, post_s))
             for m in markets:
-                est_bytes += 30_000 if m["type"] == "both_teams_to_score" else 230_000
-        print(f"[dry-run] downloads={total_markets:,} "
-              f"est={est_bytes/1e6:.1f} MB raw (before windowing)",
+                total_downloads += n_days
+                per_day = 200_000 if m["type"] == "both_teams_to_score" else 1_500_000
+                est_bytes += n_days * per_day
+        print(f"[dry-run] downloads={total_downloads:,} "
+              f"({total_markets:,} markets × ~{total_downloads/max(total_markets,1):.1f} days) "
+              f"est={est_bytes/1e9:.2f} GB raw (before windowing)",
               file=sys.stderr)
         print(f"[dry-run] output: {len(games)} parquets in {SNAPSHOTS_DIR}",
               file=sys.stderr)
@@ -597,7 +732,7 @@ async def run(args):
     market_id_map = await resolve_market_ids(games, market_id_map)
 
     sem = asyncio.Semaphore(args.parallel)
-    ok = err = skipped = 0
+    ok = failed = skipped = err = 0
     t0 = time.time()
 
     with tempfile.TemporaryDirectory(prefix="telonex_") as tmpdir:
@@ -610,7 +745,8 @@ async def run(args):
                 try:
                     status, n = await process_game(
                         client, api_key, sem, gds, markets, kickoff,
-                        args.window_hours, market_id_map, tmpdir, args.force,
+                        pre_s, post_s, market_id_map, tmpdir, args.force,
+                        seed_walkback_days=args.seed_walkback_days,
                     )
                 except Exception as e:
                     print(f"  [{i}/{len(games)}] {gds}: ERROR {e!r}", file=sys.stderr)
@@ -623,13 +759,18 @@ async def run(args):
                           file=sys.stderr, flush=True)
                 elif status == "skip-exists":
                     skipped += 1
+                elif status == "fail":
+                    failed += 1
+                    print(f"  [{i}/{len(games)}] {gds}: FAIL "
+                          f"({n} market{'s' if n!=1 else ''}; parquet not written)",
+                          file=sys.stderr, flush=True)
                 else:
                     err += 1
                     print(f"  [{i}/{len(games)}] {gds}: {status}", file=sys.stderr)
 
-    print(f"[main] done: ok={ok:,} skipped={skipped:,} err={err:,} "
-          f"elapsed={time.time()-t0:.0f}s", file=sys.stderr)
-    return 0 if err == 0 else 1
+    print(f"[main] done: ok={ok:,} skipped={skipped:,} failed={failed:,} "
+          f"err={err:,} elapsed={time.time()-t0:.0f}s", file=sys.stderr)
+    return 0 if (err == 0 and failed == 0) else 1
 
 
 def main():
@@ -640,8 +781,13 @@ def main():
     p.add_argument("--league", help="comma-separated tag_slugs (e.g. epl,bun)", default=None)
     p.add_argument("--no-full-set", action="store_true",
                    help="include games missing some of the 3+4+4+1 canonical markets")
-    p.add_argument("--window-hours", type=float, default=4.0,
-                   help="consolidation window (0.5h pre + (window-0.5)h post kickoff)")
+    p.add_argument("--pre-hours", type=float, default=24.0,
+                   help="hours of pre-kickoff quote data to retain")
+    p.add_argument("--post-hours", type=float, default=4.0,
+                   help="hours of post-kickoff quote data to retain")
+    p.add_argument("--seed-walkback-days", type=int, default=7,
+                   help="max UTC days to walk back searching for a pre-window "
+                        "seed quote, bounded by each market's quotes_from")
     p.add_argument("--parallel", type=int, default=10,
                    help="concurrent downloads (shared semaphore)")
     p.add_argument("--force", action="store_true",
