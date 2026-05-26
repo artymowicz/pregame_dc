@@ -11,7 +11,8 @@ Outputs:
         — games skipped because no kickoff was resolvable
 
 Streaming architecture: per-game, downloads ≤12 YES-side `quotes` files
-concurrently into a tmpdir, clips each to [kickoff-0.5h, kickoff+3.5h],
+concurrently into a tmpdir, clips each to [last-update-before-window,
+kickoff+3.5h] so the last pre-window quote seeds downstream ffill,
 appends to an in-memory game buffer, and deletes the raw file immediately.
 When all markets are processed, synthesizes NO rows via YES/NO complementarity
 and writes the per-game parquet. Peak disk ≈ `parallel × avg_file_size`
@@ -415,7 +416,8 @@ def resolve_market_id(condition_id, cache_map):
 # ---------------------------------------------------------------------------
 
 def _extract_window_frame(raw_path, market_info, kickoff_ts, window_hours, market_id_int):
-    """Load a downloaded quotes parquet, clip to window, cast, emit YES+NO rows."""
+    """Load a downloaded quotes parquet, clip to [last-pre-window update,
+    window-end], cast, emit YES+NO rows."""
     # Window in microseconds
     pre_s = 0.5 * 3600
     post_s = (window_hours - 0.5) * 3600
@@ -426,7 +428,13 @@ def _extract_window_frame(raw_path, market_info, kickoff_ts, window_hours, marke
         "timestamp_us", "bid_price", "bid_size", "ask_price", "ask_size"
     ]).to_pandas()
 
-    df = df[(df["timestamp_us"] >= t_lo_us) & (df["timestamp_us"] <= t_hi_us)]
+    # Seed window state with the most recent pre-window update (if any), so
+    # downstream ffill has a value to carry across the window start instead
+    # of leaving the market on the sentinel until its first in-window quote.
+    ts = df["timestamp_us"]
+    pre = ts[ts < t_lo_us]
+    t_seed_us = int(pre.max()) if not pre.empty else t_lo_us
+    df = df[(ts >= t_seed_us) & (ts <= t_hi_us)]
     if df.empty:
         return None
 
