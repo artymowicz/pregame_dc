@@ -62,6 +62,20 @@ def main():
             n_empty += 1
             continue
 
+        # Re-key snap.market_id via condition_id to match g["slot_mids"]
+        # (which came from games.csv). Polymarket renumbers market_id silently
+        # over time; condition_id is the stable identity. Without this, ~185
+        # games hit silent slot mismatches in _pivot_one.
+        csv_sub = g["games_subset"]
+        mid_map = dict(zip(csv_sub["condition_id"],
+                           csv_sub["market_id"].astype("int64")))
+        snap = snap.assign(market_id=snap["condition_id"].map(mid_map))
+        snap = snap[snap["market_id"].notna()].copy()
+        snap["market_id"] = snap["market_id"].astype("int64")
+        if snap.empty:
+            n_empty += 1
+            continue
+
         gst_ms = int(g["game_start_ts"]) * 1000
         sampled = pivot_per_game_data(
             snap, g["slot_mids"],

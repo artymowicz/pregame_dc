@@ -110,13 +110,19 @@ def collect_games(games_csv: Path) -> dict[str, dict]:
 
 def load_per_game_data(source: str, snap_path: Path) -> pd.DataFrame | None:
     """Return a DataFrame with columns:
-        market_id (int64), is_yes (bool), timestamp_ms (int64),
-        best_ask (float), best_ask_size (float).
-    Returns None if the per_game_data is missing required columns."""
+        market_id (int64), condition_id (str), is_yes (bool),
+        timestamp_ms (int64), best_ask (float), best_ask_size (float).
+    Returns None if the per_game_data is missing required columns.
+
+    `condition_id` is the stable on-chain identifier; `market_id` is
+    Polymarket-internal and is silently renumbered over time, so callers
+    that need to join with games.csv must re-key via condition_id (see
+    memory project_polymarket_market_id_unstable.md)."""
     if source not in ("self_collected", "telonex"):
         raise ValueError(f"unknown source: {source!r}")
     df = pd.read_parquet(snap_path)
-    needed = ["market_id", "is_yes", "timestamp_ms", "best_ask", "best_ask_size"]
+    needed = ["market_id", "condition_id", "is_yes", "timestamp_ms",
+              "best_ask", "best_ask_size"]
     missing = [c for c in needed if c not in df.columns]
     if missing:
         return None
