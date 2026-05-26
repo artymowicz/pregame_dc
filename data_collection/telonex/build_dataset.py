@@ -732,7 +732,7 @@ async def run(args):
     market_id_map = await resolve_market_ids(games, market_id_map)
 
     sem = asyncio.Semaphore(args.parallel)
-    ok = failed = skipped = err = 0
+    ok = failed = skipped = no_data = err = 0
     t0 = time.time()
 
     with tempfile.TemporaryDirectory(prefix="telonex_") as tmpdir:
@@ -764,12 +764,16 @@ async def run(args):
                     print(f"  [{i}/{len(games)}] {gds}: FAIL "
                           f"({n} market{'s' if n!=1 else ''}; parquet not written)",
                           file=sys.stderr, flush=True)
+                elif status == "no-data":
+                    no_data += 1
+                    print(f"  [{i}/{len(games)}] {gds}: no-data", file=sys.stderr)
                 else:
                     err += 1
                     print(f"  [{i}/{len(games)}] {gds}: {status}", file=sys.stderr)
 
     print(f"[main] done: ok={ok:,} skipped={skipped:,} failed={failed:,} "
-          f"err={err:,} elapsed={time.time()-t0:.0f}s", file=sys.stderr)
+          f"no_data={no_data:,} err={err:,} elapsed={time.time()-t0:.0f}s",
+          file=sys.stderr)
     return 0 if (err == 0 and failed == 0) else 1
 
 
