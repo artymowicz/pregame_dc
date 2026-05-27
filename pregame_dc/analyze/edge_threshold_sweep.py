@@ -36,7 +36,7 @@ ASK_LO, ASK_HI = 0.01, 0.99
 N_FOLDS = 5
 LOSS = "brier"
 
-DEFAULT_GRID = np.round(np.arange(0.030, 0.150 + 1e-9, 0.005), 4)
+DEFAULT_GRID = np.round(np.arange(0.030, 0.300 + 1e-9, 0.005), 4)
 
 MONEYLINE_SLOTS_Y = [0, 1, 2]
 SPREAD_SLOTS_Y = [3, 4, 5, 6]
@@ -135,7 +135,7 @@ def main():
     ap.add_argument("--time-seconds", type=float, default=-600.0,
                     help="seconds_since_game_start to evaluate at (default -600)")
     ap.add_argument("--thresholds", type=float, nargs="+", default=None,
-                    help="edge threshold grid (default: 0.030..0.150 in 0.005 steps)")
+                    help="edge threshold grid (default: 0.030..0.300 in 0.005 steps)")
     ap.add_argument("--out", type=Path, default=None,
                     help="output CSV path (default: plots/edge_threshold_sweep_<stem>.csv)")
     args = ap.parse_args()
