@@ -202,6 +202,35 @@ def main():
                              f"{se:.6f}", f"{t:.4f}", f"{win:.2f}",
                              f"{fmin:.6f}", f"{fmax:.6f}"])
 
+    # Per-type optimum: threshold that maximizes total PnL (n >= 30 fires).
+    n_games_total = len(X)
+    print(f"\n=== per-type threshold maximizing total PnL "
+          f"(n_games={n_games_total}, n_fires >= 30) ===")
+    summary_header = (f"{'type':<11} {'thr*':>6s} {'n':>5s} "
+                      f"{'fire/game':>10s} {'totPnL':>9s} {'PnL/sh':>9s} "
+                      f"{'SE':>7s} {'t':>6s} {'win%':>6s}")
+    print(summary_header)
+    print("-" * len(summary_header))
+    for type_name, type_mask in type_masks.items():
+        best_opt = None
+        for thr in grid:
+            fire = (edge_arr > thr) & type_mask
+            if fire.sum() < 30:
+                continue
+            n, tot, mean, se, t = _stat(pnl[fire], cell_game[fire])
+            if best_opt is None or tot > best_opt["tot"]:
+                win = (outcome[fire] == 1).mean() * 100
+                best_opt = dict(thr=thr, n=n, tot=tot, mean=mean, se=se, t=t,
+                                win=win, rate=n / n_games_total)
+        if best_opt is None:
+            print(f"{type_name:<11}  (no threshold with >=30 fires)")
+            continue
+        print(f"{type_name:<11} {best_opt['thr']:>6.3f} {best_opt['n']:>5d} "
+              f"{best_opt['rate']:>10.4f} "
+              f"{best_opt['tot']:>+9.2f} {best_opt['mean']:>+9.4f} "
+              f"{best_opt['se']:>7.4f} {best_opt['t']:>+6.2f} "
+              f"{best_opt['win']:>6.1f}")
+
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     with out_csv.open("w", newline="") as f:
         w = csv.writer(f)
