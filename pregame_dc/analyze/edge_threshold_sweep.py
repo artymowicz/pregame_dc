@@ -202,28 +202,48 @@ def main():
                              f"{se:.6f}", f"{t:.4f}", f"{win:.2f}",
                              f"{fmin:.6f}", f"{fmax:.6f}"])
 
-    # Per-type optimum: threshold that maximizes total PnL (n >= 30 fires).
+    # Per-type optimum: threshold that maximizes total PnL, but with a
+    # noise-robust criterion. For each interior grid point e, take
+    # min(totPnL(e-de), totPnL(e), totPnL(e+de)); pick the e that maximizes
+    # that. A spurious one-cell PnL spike won't win unless its two neighbors
+    # also do well. Requires n >= 30 fires at e *and* both neighbors.
     n_games_total = len(X)
     print(f"\n=== per-type threshold maximizing total PnL "
-          f"(n_games={n_games_total}, n_fires >= 30) ===")
+          f"(robust: max over e of min(tot(e±de), tot(e)); "
+          f"n_games={n_games_total}, n>=30 at e and both neighbors) ===")
     summary_header = (f"{'type':<11} {'thr*':>6s} {'n':>5s} "
                       f"{'fire/game':>10s} {'totPnL':>9s} {'PnL/sh':>9s} "
                       f"{'SE':>7s} {'t':>6s} {'win%':>6s}")
     print(summary_header)
     print("-" * len(summary_header))
     for type_name, type_mask in type_masks.items():
-        best_opt = None
+        # Precompute per-threshold stats for this type so we can look at
+        # neighbors cheaply.
+        per_thr = []
         for thr in grid:
             fire = (edge_arr > thr) & type_mask
-            if fire.sum() < 30:
+            n = int(fire.sum())
+            if n < 30:
+                per_thr.append(None)
                 continue
-            n, tot, mean, se, t = _stat(pnl[fire], cell_game[fire])
-            if best_opt is None or tot > best_opt["tot"]:
-                win = (outcome[fire] == 1).mean() * 100
-                best_opt = dict(thr=thr, n=n, tot=tot, mean=mean, se=se, t=t,
-                                win=win, rate=n / n_games_total)
+            n_, tot, mean, se, t = _stat(pnl[fire], cell_game[fire])
+            win = (outcome[fire] == 1).mean() * 100
+            per_thr.append(dict(thr=float(thr), n=n, tot=tot, mean=mean,
+                                se=se, t=t, win=win,
+                                rate=n / n_games_total))
+        best_opt = None
+        best_triplet_min = -np.inf
+        for i in range(1, len(grid) - 1):
+            a, b, c = per_thr[i - 1], per_thr[i], per_thr[i + 1]
+            if a is None or b is None or c is None:
+                continue
+            triplet_min = min(a["tot"], b["tot"], c["tot"])
+            if triplet_min > best_triplet_min:
+                best_triplet_min = triplet_min
+                best_opt = b
         if best_opt is None:
-            print(f"{type_name:<11}  (no threshold with >=30 fires)")
+            print(f"{type_name:<11}  (no interior threshold with >=30 fires "
+                  f"at all three of e-de, e, e+de)")
             continue
         print(f"{type_name:<11} {best_opt['thr']:>6.3f} {best_opt['n']:>5d} "
               f"{best_opt['rate']:>10.4f} "
