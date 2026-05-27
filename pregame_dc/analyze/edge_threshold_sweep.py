@@ -88,7 +88,8 @@ def oos_predictions(X, y, folds):
 
 
 def collect_cells(X, Y24, pred24, folds):
-    """One row per (game, candidate token): (edge, pnl, outcome, fold, slot)."""
+    """One row per (game, candidate token): (edge, pnl, outcome, fold, slot,
+    game_idx). game_idx is the per-game row index used for cluster-robust SE."""
     rows = []
     for s in CANDIDATE_SLOTS:
         ask = X[:, s]
@@ -96,16 +97,32 @@ def collect_cells(X, Y24, pred24, folds):
         edge = pred24[:, s] - ask
         pnl = Y24[:, s] - ask
         for i in np.where(valid)[0]:
-            rows.append((edge[i], pnl[i], Y24[i, s], folds[i], s))
+            rows.append((edge[i], pnl[i], Y24[i, s], folds[i], s, i))
     return np.array(rows, dtype=np.float64)
 
 
-def _stat(pnl):
+def _stat(pnl, game_ids):
+    """Mean, sum, cluster-robust SE (Liang-Zeger), and t. Clusters by game so
+    the SE correctly reflects within-game correlation across cells; raw cell-
+    level SE understates this by a meaningful factor."""
     n = len(pnl)
     if n == 0:
         return 0, 0.0, 0.0, 0.0, 0.0
     mean = pnl.mean()
-    se = pnl.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0
+    if n == 1:
+        return n, pnl.sum(), mean, 0.0, 0.0
+    residuals = pnl - mean
+    # group residuals by game and sum within group
+    order = np.argsort(game_ids, kind="stable")
+    sorted_ids = game_ids[order]
+    sorted_res = residuals[order]
+    boundaries = np.r_[0, np.flatnonzero(np.diff(sorted_ids)) + 1, n]
+    cluster_sums = np.add.reduceat(sorted_res, boundaries[:-1])
+    G = len(cluster_sums)
+    if G < 2:
+        return n, pnl.sum(), mean, 0.0, 0.0
+    var_mean = (G / (G - 1.0)) * (cluster_sums**2).sum() / n**2
+    se = float(np.sqrt(max(var_mean, 0.0)))
     t = mean / se if se > 0 else 0.0
     return n, pnl.sum(), mean, se, t
 
@@ -142,6 +159,7 @@ def main():
     edge_arr, pnl, outcome, cell_fold = (cells[:, 0], cells[:, 1],
                                           cells[:, 2], cells[:, 3])
     slot = cells[:, 4].astype(int)
+    cell_game = cells[:, 5].astype(np.int64)
 
     type_masks = {"aggregate": np.ones(len(slot), dtype=bool)}
     for name, slots in TYPE_SLOTS.items():
@@ -163,7 +181,7 @@ def main():
         print("-" * len(header))
         for thr in grid:
             fire = (edge_arr > thr) & type_mask
-            n, tot, mean, se, t = _stat(pnl[fire])
+            n, tot, mean, se, t = _stat(pnl[fire], cell_game[fire])
             if n == 0:
                 print(f"{thr:>5.3f} {0:>6d}  (no fires)")
                 out_rows.append([f"{thr:.3f}", type_name, 0,
@@ -200,9 +218,10 @@ def main():
     if best:
         print(f"\nbest aggregate PnL/share (>=30 fires): threshold {best[0]}  "
               f"n={best[2]}  PnL/share={float(best[4]):+.4f}  t={float(best[6]):+.2f}")
-    print("\nPnL/share is per unit notional (outcome − ask). Cells within a "
-          "game are\ncorrelated, so the t-stat overstates significance — the "
-          "per-fold min..max\nspread is the more honest stability check.")
+    print("\nPnL/share is per unit notional (outcome − ask). SE/t are "
+          "cluster-robust by\ngame_slug (Liang-Zeger), accounting for "
+          "within-game cell correlation. The\nper-fold min..max spread is "
+          "an additional honest stability check.")
 
 
 if __name__ == "__main__":
