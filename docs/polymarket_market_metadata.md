@@ -55,9 +55,10 @@ Both return identical 82-field market objects. There is no need to call `/market
 - **Works**: Yes, reliably. The only API that accepts condition_id as a lookup key.
 - **Input**: Hex condition_id string.
 - **Returns**: 29 fields. Snake_case naming (vs Gamma's camelCase).
-- **Closed markets**: Works for closed markets, including very old ones.
-- **Key exclusive fields**: `tags` (string array, e.g. `["Sports", "Soccer", "Games", "AFC"]`), `tokens` (array with `token_id` and `outcome`).
-- **Missing vs Gamma**: No `sportsMarketType`, no numeric `id` (market_id), no `events`, no volume data, no resolution details.
+- **Coverage cutoff** (verified 2026-05-26 across 6 year buckets of 30 markets each): markets ending in **2023 or later** return 200 reliably (100% in 2023/2024/2026; 93% in 2025; sporadic misses). Markets ending **pre-2023** mostly return 404 (2/30 in 2022, 0/30 in 2021). For pre-2023 markets, only Gamma `/markets/{market_id}` works.
+- **Closed markets**: For markets returned (2023+), `closed`, `accepting_orders`, and per-token `winner` (bool) + `price` (0/1) are present — sufficient to derive YES-side `final_price` (= `tokens[outcome=='Yes'].price`). The actual closure timestamp (`closedTime` in Gamma) is **not** available; only `end_date_iso` (the scheduled end, not when UMA resolution happened).
+- **Key exclusive fields**: `tags` (string array, e.g. `["Sports", "Soccer", "Games", "AFC"]`), `tokens` (array with `token_id`, `outcome`, `winner`, `price`).
+- **Missing vs Gamma**: No `sportsMarketType`, no numeric `id` (market_id), no `events`, no volume data, no `outcomePrices` string, no `closedTime`, no `umaResolutionStatus`.
 
 ### 2c. Field Comparison: Gamma vs CLOB
 
@@ -73,6 +74,10 @@ Both return identical 82-field market objects. There is no need to call `/market
 | token_ids | `clobTokenIds` | `tokens[].token_id` | Both have it, different structure |
 | neg_risk | `negRisk` | `neg_risk` | Both |
 | events/series | `events` (nested) | *missing* | **Gamma-only** |
+| closed flag | `closed` | `closed` | Both. CLOB also has `accepting_orders`. |
+| resolved YES price | `outcomePrices[0]` (string) | `tokens[outcome=='Yes'].price` (numeric) | Same value, different shape. CLOB also has `tokens[].winner` (bool). |
+| closure timestamp | `closedTime` | *missing* | **Gamma-only**. CLOB has only `end_date_iso` (scheduled end). |
+| UMA status | `umaResolutionStatus` | *missing* | **Gamma-only**. |
 
 ### 2d. Recommended Lookup Workflows
 

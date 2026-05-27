@@ -37,14 +37,65 @@ import requests
 from pregame_dc import paths
 
 GAMMA_URL = "https://gamma-api.polymarket.com/markets/{id}"
+CLOB_URL = "https://clob.polymarket.com/markets/{cid}"
 
 
-def fetch_one(session: requests.Session, market_id: int) -> dict:
+def _fetch_clob(session: requests.Session, market_id: int,
+                condition_id: str) -> dict | None:
+    """CLOB fallback for markets that 404 on Gamma (e.g. silently renumbered
+    market_ids). Returns the same output schema as fetch_one, or None if CLOB
+    also misses (pre-2023 markets are not indexed in CLOB). See
+    docs/polymarket_market_metadata.md section 2b."""
+    url = CLOB_URL.format(cid=condition_id)
+    for attempt in range(4):
+        try:
+            r = session.get(url, timeout=30)
+            if r.status_code == 404:
+                return None
+            r.raise_for_status()
+            m = r.json()
+            closed = bool(m.get("closed", False))
+            # Per docs/polymarket_market_metadata.md: tokens[0] is the YES side
+            # by Polymarket convention (clobTokenIds[0]). The `outcome` field
+            # is the human-readable label (literal "Yes" for binary markets,
+            # but team names for 3-way moneylines and team-named spreads), so
+            # filtering on outcome=="Yes" silently misses team-named markets.
+            tokens = m.get("tokens") or []
+            yes_price = None
+            if tokens and tokens[0].get("price") is not None:
+                try:
+                    yes_price = float(tokens[0]["price"])
+                except (TypeError, ValueError):
+                    pass
+            final_price = yes_price if (closed and yes_price is not None) else None
+            # CLOB has no closedTime / umaResolutionStatus equivalents — we
+            # mark uma_status to record that the value came from CLOB so
+            # downstream consumers can tell.
+            return {"market_id": market_id, "final_price": final_price,
+                    "closed": closed, "closed_time": "",
+                    "uma_status": "resolved_clob" if final_price is not None else "clob_open"}
+        except (requests.RequestException, json.JSONDecodeError) as e:
+            if attempt == 3:
+                return {"market_id": market_id, "final_price": None,
+                        "closed": False, "closed_time": "",
+                        "uma_status": f"error_clob:{type(e).__name__}"}
+            time.sleep(1.5 ** attempt)
+
+
+def fetch_one(session: requests.Session, market_id: int,
+              condition_id: str | None = None) -> dict:
+    """Fetch one market via Gamma; fall back to CLOB on 404 when condition_id
+    is provided. Polymarket silently renumbers market_id over time; the
+    condition_id is stable, so CLOB can recover renumbered markets."""
     url = GAMMA_URL.format(id=market_id)
     for attempt in range(4):
         try:
             r = session.get(url, timeout=30)
             if r.status_code == 404:
+                if condition_id:
+                    clob = _fetch_clob(session, market_id, condition_id)
+                    if clob is not None:
+                        return clob
                 return {"market_id": market_id, "final_price": None,
                         "closed": False, "closed_time": "", "uma_status": "not_found"}
             r.raise_for_status()
@@ -69,19 +120,21 @@ def fetch_one(session: requests.Session, market_id: int) -> dict:
             time.sleep(1.5 ** attempt)
 
 
-def _collect_market_ids() -> set[int]:
-    ids: set[int] = set()
+def _collect_market_ids() -> dict[int, str]:
+    """Return {market_id: condition_id} across all games.csv files. When the
+    same market_id appears with conflicting condition_ids (shouldn't happen,
+    but defensively), last-write-wins."""
+    out: dict[int, str] = {}
     for csv_path in (paths.SELF_COLLECTED_GAMES_CSV, paths.TELONEX_GAMES_CSV):
         if not csv_path.exists():
             print(f"  (skipping {csv_path}: not present)")
             continue
-        ids_one = (
-            pd.read_csv(csv_path, usecols=["market_id"])["market_id"]
-              .dropna().astype(int).unique()
-        )
-        ids.update(ids_one.tolist())
-        print(f"  {csv_path}: {len(ids_one)} unique market_ids")
-    return ids
+        df = pd.read_csv(csv_path, usecols=["market_id", "condition_id"]).dropna()
+        df["market_id"] = df["market_id"].astype(int)
+        for mid, cid in zip(df["market_id"], df["condition_id"]):
+            out[int(mid)] = str(cid)
+        print(f"  {csv_path}: {df['market_id'].nunique()} unique market_ids")
+    return out
 
 
 def main():
@@ -96,13 +149,14 @@ def main():
     args = ap.parse_args()
 
     print("collecting market_ids ...")
-    ids = sorted(_collect_market_ids())
-    if not ids:
+    mid_to_cid = _collect_market_ids()
+    if not mid_to_cid:
         raise SystemExit(
             "no market_ids found. Run data_collection.self_collected.build_dataset "
             "or data_collection.telonex.build_dataset first to populate the "
             "games.csv files."
         )
+    ids = sorted(mid_to_cid.keys())
     print(f"union market_ids: {len(ids)}")
 
     existing: dict[int, dict] = {}
@@ -133,7 +187,10 @@ def main():
 
     t0 = time.time()
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futures = {ex.submit(fetch_one, session, mid): mid for mid in todo}
+        futures = {
+            ex.submit(fetch_one, session, mid, mid_to_cid.get(mid)): mid
+            for mid in todo
+        }
         n_done = 0
         for fut in as_completed(futures):
             row = fut.result()
