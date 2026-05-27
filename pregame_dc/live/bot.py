@@ -140,8 +140,12 @@ DEFAULT_MODEL = paths.MODEL_DC_T_10MIN
 
 ASK_LO, ASK_HI = 0.01, 0.99
 SPREAD_FLOOR = 0.005          # floor for book_spread when computing ratio
-DEFAULT_THRESHOLD = 4.0       # ratio-rule threshold; see scratch backtests
-DEFAULT_RULE = "ratio"        # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
+DEFAULT_RULE = "edge"         # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
+# Per-market-type firing thresholds (units match --rule). Defaults are the
+# per-type DOLLAR-OPTIMA from `pregame_dc.analyze.edge_threshold_sweep` on
+# cleaned-telonex (see [[project-model-rule-interaction]] memory). Moneyline
+# omitted because the model has no edge there.
+DEFAULT_THRESHOLDS = {"spread": 0.015, "totals": 0.120, "btts": 0.065}
 DEFAULT_T_OFFSET_S = -600           # -10 min
 DEFAULT_BUDGET = 20.0
 DEFAULT_HOURS_AHEAD = 48
@@ -156,12 +160,39 @@ INTRA_GAME_FIRE_DELAY_S = 1.0
 HEARTBEAT_INTERVAL_S = 60
 
 MONEYLINE_SLOTS_Y = [0, 1, 2]
-TOTALS_SLOTS_Y = [7, 8, 9, 10]
-# Trading both YES and NO sides; NO side has slot index +12.
-CANDIDATE_SLOTS = (
-    MONEYLINE_SLOTS_Y + TOTALS_SLOTS_Y +
-    [s + 12 for s in MONEYLINE_SLOTS_Y + TOTALS_SLOTS_Y]
-)
+SPREAD_SLOTS_Y    = [3, 4, 5, 6]
+TOTALS_SLOTS_Y    = [7, 8, 9, 10]
+BTTS_SLOTS_Y      = [11]
+TYPE_SLOTS_Y: dict[str, list[int]] = {
+    "moneyline": MONEYLINE_SLOTS_Y,
+    "spread":    SPREAD_SLOTS_Y,
+    "totals":    TOTALS_SLOTS_Y,
+    "btts":      BTTS_SLOTS_Y,
+}
+
+
+def _parse_thresholds(s: str) -> dict[str, float]:
+    """Parse 'type=value,type=value,...' into a dict. Unknown types raise.
+    Types not listed are skipped (no fires)."""
+    out: dict[str, float] = {}
+    for part in s.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if "=" not in part:
+            raise SystemExit(f"--thresholds: expected 'type=value', got {part!r}")
+        k, v = part.split("=", 1)
+        k = k.strip()
+        if k not in TYPE_SLOTS_Y:
+            raise SystemExit(f"--thresholds: unknown type {k!r} "
+                             f"(valid: {sorted(TYPE_SLOTS_Y)})")
+        try:
+            out[k] = float(v)
+        except ValueError:
+            raise SystemExit(f"--thresholds: {v!r} is not a number")
+    if not out:
+        raise SystemExit("--thresholds: at least one type=value required")
+    return out
 
 
 def _now_utc_iso() -> str:
@@ -299,24 +330,22 @@ class PregameDCBot:
         sys.stderr = _Tee(sys.stderr, self._stdout_fh)
         self.live = bool(args.live)
         self.budget = float(args.budget)
-        self.threshold = float(args.threshold)
         self.rule = str(args.rule)
         if self.rule not in ("edge", "ratio"):
             raise SystemExit(f"--rule: must be 'edge' or 'ratio', got {self.rule!r}")
         self.t_offset = int(args.time_seconds)
 
-        # Market-type filter (comma-separated, e.g. "moneyline" or "moneyline,totals")
-        wanted = [m.strip() for m in args.markets.split(",") if m.strip()]
-        slot_groups = {
-            "moneyline": MONEYLINE_SLOTS_Y,
-            "totals":    TOTALS_SLOTS_Y,
-        }
-        for m in wanted:
-            if m not in slot_groups:
-                raise SystemExit(f"--markets: unknown type {m!r} (valid: {list(slot_groups)})")
-        yes_slots = sum((slot_groups[m] for m in wanted), [])
-        self.candidate_slots = yes_slots + [s + 12 for s in yes_slots]
-        print(f"[init] market filter: {wanted}  candidate_slots={self.candidate_slots}")
+        # Per-market-type firing thresholds. Types not listed are not fired on.
+        # Both YES and NO sides of a listed type fire on the same threshold.
+        self.thresholds = _parse_thresholds(args.thresholds)
+        self.slot_threshold: dict[int, float] = {}
+        for mtype, thr in self.thresholds.items():
+            for s in TYPE_SLOTS_Y[mtype]:
+                self.slot_threshold[s] = thr
+                self.slot_threshold[s + 12] = thr
+        self.candidate_slots = sorted(self.slot_threshold.keys())
+        print(f"[init] firing thresholds (rule={self.rule}): {self.thresholds}  "
+              f"candidate_slots={self.candidate_slots}")
 
         self.model = DixonColesModel(Path(args.model))
         if abs(self.model.t_target - self.t_offset) > 1e-6:
@@ -696,7 +725,7 @@ class PregameDCBot:
                 "start_ts": int(game_info["start_ts"]),
                 "t_offset_s": self.t_offset,
                 "rule": self.rule,
-                "rule_threshold": self.threshold,
+                "rule_thresholds": self.thresholds,
                 "asks": asks_clean.tolist(),
                 "ask_sizes": sizes_clean.tolist(),
                 "pred": pred[:12].tolist(),
@@ -739,22 +768,25 @@ class PregameDCBot:
                     score = edge / max(book_spread, SPREAD_FLOOR)
                 else:
                     score = edge
-                if score <= self.threshold:
+                thr = self.slot_threshold[slot]
+                if score <= thr:
                     continue
-                candidates.append((slot, ask, float(pred[slot]), edge, book_spread, score))
+                candidates.append((slot, ask, float(pred[slot]), edge,
+                                   book_spread, score, thr))
 
             candidates.sort(key=lambda c: -c[5])    # by descending score
             print(f"[{now_str()}]   {slug}: {len(candidates)} candidate fire(s) "
-                  f"(rule={self.rule}, threshold {self.threshold:+.3f})")
+                  f"(rule={self.rule}, thresholds {self.thresholds})")
 
-            for slot, ask, pred_val, edge, book_spread, score in candidates:
+            for slot, ask, pred_val, edge, book_spread, score, thr in candidates:
                 await self._fire_token(game_info, slot, ask, pred_val, edge,
-                                       book_spread, score,
+                                       book_spread, score, thr,
                                        asks_clean, sizes_clean)
                 await asyncio.sleep(INTRA_GAME_FIRE_DELAY_S)
 
     async def _fire_token(self, game_info, slot, ask, pred_val, edge,
-                          book_spread, score, asks_24, sizes_24):
+                          book_spread, score, rule_threshold,
+                          asks_24, sizes_24):
         slug = game_info["slug"]
         token_id = game_info["tokens_24"][slot]
         market_type, market_label, side = _slot_label(slot)
@@ -795,7 +827,7 @@ class PregameDCBot:
             "edge": edge,
             "book_spread": float(book_spread),
             "rule": self.rule,
-            "rule_threshold": self.threshold,
+            "rule_threshold": float(rule_threshold),
             "score": float(score),
             "order_args": {"price": price, "size": size},
             "notional_usdc": notional,
@@ -994,7 +1026,7 @@ class PregameDCBot:
     async def run(self):
         print(f"[{now_str()}] PregameDCBot starting "
               f"(live={self.live}, budget=${self.budget}, "
-              f"rule={self.rule}, threshold={self.threshold}, "
+              f"rule={self.rule}, thresholds={self.thresholds}, "
               f"t_offset={self.t_offset}s, model={self.args.model})")
         print(f"[{now_str()}] run logs: {self.orders_log.name}  "
               f"{self.kickoffs_log.name}  {self.ws_master_log.name}  "
@@ -1025,17 +1057,21 @@ def parse_args():
                     help="Firing rule: 'edge' (fire when predicted_prob−ask > threshold) "
                          "or 'ratio' (fire when edge/max(book_spread, 0.005) > threshold). "
                          f"Default {DEFAULT_RULE}.")
-    ap.add_argument("--threshold", type=float, default=DEFAULT_THRESHOLD,
-                    help=f"Threshold for the firing rule (default {DEFAULT_THRESHOLD}; "
-                         "interpreted as edge for --rule=edge, or as ratio for --rule=ratio)")
+    ap.add_argument("--thresholds", type=str,
+                    default=",".join(f"{k}={v}" for k, v in DEFAULT_THRESHOLDS.items()),
+                    help=f"Per-market-type firing thresholds, comma-separated. "
+                         f"Format: 'type=value,...'. Valid types: "
+                         f"{sorted(TYPE_SLOTS_Y)}. Types omitted are skipped "
+                         f"(no fires on them). Values are in the rule's score "
+                         f"units (probability units for 'edge', dimensionless for "
+                         f"'ratio'). Default (cleaned-telonex dollar optima): "
+                         f"{','.join(f'{k}={v}' for k,v in DEFAULT_THRESHOLDS.items())}")
     ap.add_argument("--time-seconds", type=int, default=DEFAULT_T_OFFSET_S,
                     help=f"Fire offset relative to game_start (default {DEFAULT_T_OFFSET_S})")
     ap.add_argument("--model", type=str, default=str(DEFAULT_MODEL),
                     help="Path to .npz model parameters")
     ap.add_argument("--hours-ahead", type=int, default=DEFAULT_HOURS_AHEAD,
                     help=f"Discovery horizon in hours (default {DEFAULT_HOURS_AHEAD})")
-    ap.add_argument("--markets", type=str, default="moneyline,totals",
-                    help="Comma-separated market types to fire on (default 'moneyline,totals')")
     return ap.parse_args()
 
 

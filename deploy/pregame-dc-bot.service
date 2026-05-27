@@ -24,7 +24,7 @@ Type=simple
 User=pregamedc
 Group=pregamedc
 WorkingDirectory=/opt/pregame_dc
-ExecStart=/opt/pregame_dc/.venv/bin/python -m pregame_dc.live.bot --live --rule edge --threshold 0.04
+ExecStart=/opt/pregame_dc/.venv/bin/python -m pregame_dc.live.bot --live
 Environment=PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 UMask=0077
 
