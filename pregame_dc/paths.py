@@ -27,10 +27,12 @@ SELF_COLLECTED_LABELED      = LABELED_DIR / "self_collected_dataset.parquet"
 SELF_COLLECTED_DIR          = DATA_DIR / "self_collected"
 SELF_COLLECTED_GAMES_CSV    = SELF_COLLECTED_DIR / "games.csv"
 SELF_COLLECTED_SNAPSHOTS    = SELF_COLLECTED_DIR / "per_game_data"
+SELF_COLLECTED_TRADES       = SELF_COLLECTED_DIR / "trades"
 
 TELONEX_DIR     = DATA_DIR / "telonex"
 TELONEX_GAMES_CSV = TELONEX_DIR / "games.csv"
 TELONEX_SNAPSHOTS = TELONEX_DIR / "per_game_data"
+TELONEX_TRADES  = TELONEX_DIR / "trades"
 TELONEX_METADATA = TELONEX_DIR / "metadata" / "markets.parquet"
 TELONEX_KICKOFF_CACHE = TELONEX_DIR / "cache" / "kickoff_times.json"
 
@@ -43,6 +45,7 @@ MODEL_T_10MIN_IMP = MODELS_DIR / "rank3_t-10min_imp.npz"
 MODEL_T_10MIN_K4 = MODELS_DIR / "rank4_t-10min.npz"
 # Dixon-Coles two-rate goal model (current live model).
 MODEL_DC_T_10MIN = MODELS_DIR / "dc_t-10min.npz"
+MODEL_DC_T_25MIN = MODELS_DIR / "dc_t-25min.npz"
 
 # ---- runtime / live bot logs --------------------------------------
 LOGS_DIR        = PACKAGE_ROOT / "logs"
@@ -72,4 +75,12 @@ def source_per_game_data_dir(source: str) -> Path:
         return SELF_COLLECTED_SNAPSHOTS
     if source == "telonex":
         return TELONEX_SNAPSHOTS
+    raise ValueError(f"unknown source: {source!r} (expected 'self_collected' or 'telonex')")
+
+
+def source_trades_dir(source: str) -> Path:
+    if source == "self_collected":
+        return SELF_COLLECTED_TRADES
+    if source == "telonex":
+        return TELONEX_TRADES
     raise ValueError(f"unknown source: {source!r} (expected 'self_collected' or 'telonex')")
