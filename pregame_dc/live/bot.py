@@ -7,11 +7,12 @@ At t = game_start + --time-seconds (default -10min), the bot:
   2. Computes the 12 market probabilities with the Dixon-Coles two-rate goal
      model (pregame_dc.models.dixon_coles), loaded from a saved .npz
      produced by `python -m pregame_dc.live.fit_save_dc`.
-  3. For each moneyline (slots 0/1/2 + NO sides) and totals (7/8/9/10 + NO)
-     where 0.01 <= ask <= 0.99 AND the firing rule clears --threshold,
-     places a FOK buy of size = max(5, ceil(1.00 / price)),
-     price = ceil(ask*100)/100. The firing rule is either edge (pred - ask)
-     or ratio (edge / max(book_spread, 0.005)); see --rule.
+  3. For each candidate slot selected by --thresholds × --side (default:
+     spread NO-buy tokens, slots 15/16/17/18) where 0.01 <= ask <= 0.99 AND
+     the firing rule clears the per-type threshold, places a FOK buy of
+     size = max(5, ceil(1.00 / price)), price = ceil(ask*100)/100. The
+     firing rule is either edge (pred - ask) or ratio
+     (edge / max(book_spread, 0.005)); see --rule.
   4. Captures every user-WS event for ~60s after placement to a per-order
      JSONL. Logs a one-line summary (with outcome=null) to orders_summary.jsonl.
 
@@ -141,11 +142,13 @@ DEFAULT_MODEL = paths.MODEL_DC_T_10MIN
 ASK_LO, ASK_HI = 0.01, 0.99
 SPREAD_FLOOR = 0.005          # floor for book_spread when computing ratio
 DEFAULT_RULE = "edge"         # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
-# Per-market-type firing thresholds (units match --rule). Defaults are the
-# per-type DOLLAR-OPTIMA from `pregame_dc.analyze.edge_threshold_sweep` on
-# cleaned-telonex (see [[project-model-rule-interaction]] memory). Moneyline
-# omitted because the model has no edge there.
-DEFAULT_THRESHOLDS = {"spread": 0.015, "totals": 0.120, "btts": 0.065}
+# Per-market-type firing thresholds (units match --rule). Default reflects the
+# per-(type, side) findings of `pregame_dc.analyze.edge_threshold_sweep_yesno`:
+# only the NO-buy side carries robust positive edge across the cleaned-telonex
+# dataset, and spread/no shows the strongest signal (t≈+4.5 at thr=0). YES-buy
+# sides have no positive edge for any type — see --side default below.
+DEFAULT_THRESHOLDS = {"spread": 0.0}
+DEFAULT_SIDE = "no"           # "yes" | "no" | "both" — which token side(s) to fire on
 DEFAULT_T_OFFSET_S = -600           # -10 min
 DEFAULT_BUDGET = 20.0
 DEFAULT_HOURS_AHEAD = 48
@@ -336,16 +339,24 @@ class PregameDCBot:
         self.t_offset = int(args.time_seconds)
 
         # Per-market-type firing thresholds. Types not listed are not fired on.
-        # Both YES and NO sides of a listed type fire on the same threshold.
+        # --side selects which token side(s) of each listed type fire:
+        #   "yes"  -> only YES slots (0..11)
+        #   "no"   -> only NO slots  (12..23)
+        #   "both" -> both
         self.thresholds = _parse_thresholds(args.thresholds)
+        self.side = str(args.side)
+        if self.side not in ("yes", "no", "both"):
+            raise SystemExit(f"--side: must be yes|no|both, got {self.side!r}")
         self.slot_threshold: dict[int, float] = {}
         for mtype, thr in self.thresholds.items():
             for s in TYPE_SLOTS_Y[mtype]:
-                self.slot_threshold[s] = thr
-                self.slot_threshold[s + 12] = thr
+                if self.side in ("yes", "both"):
+                    self.slot_threshold[s] = thr
+                if self.side in ("no", "both"):
+                    self.slot_threshold[s + 12] = thr
         self.candidate_slots = sorted(self.slot_threshold.keys())
-        print(f"[init] firing thresholds (rule={self.rule}): {self.thresholds}  "
-              f"candidate_slots={self.candidate_slots}")
+        print(f"[init] firing thresholds (rule={self.rule}, side={self.side}): "
+              f"{self.thresholds}  candidate_slots={self.candidate_slots}")
 
         self.model = DixonColesModel(Path(args.model))
         if abs(self.model.t_target - self.t_offset) > 1e-6:
@@ -726,6 +737,10 @@ class PregameDCBot:
                 "t_offset_s": self.t_offset,
                 "rule": self.rule,
                 "rule_thresholds": self.thresholds,
+                "side": self.side,
+                # Canonical 12 market_ids (slot order) so outcomes are
+                # recoverable post-hoc (join to Gamma / outcomes.parquet).
+                "market_ids_12": [int(m) for m in game_info["market_ids_12"]],
                 "asks": asks_clean.tolist(),
                 "ask_sizes": sizes_clean.tolist(),
                 "pred": pred[:12].tolist(),
@@ -1026,7 +1041,7 @@ class PregameDCBot:
     async def run(self):
         print(f"[{now_str()}] PregameDCBot starting "
               f"(live={self.live}, budget=${self.budget}, "
-              f"rule={self.rule}, thresholds={self.thresholds}, "
+              f"rule={self.rule}, thresholds={self.thresholds}, side={self.side}, "
               f"t_offset={self.t_offset}s, model={self.args.model})")
         print(f"[{now_str()}] run logs: {self.orders_log.name}  "
               f"{self.kickoffs_log.name}  {self.ws_master_log.name}  "
@@ -1064,8 +1079,15 @@ def parse_args():
                          f"{sorted(TYPE_SLOTS_Y)}. Types omitted are skipped "
                          f"(no fires on them). Values are in the rule's score "
                          f"units (probability units for 'edge', dimensionless for "
-                         f"'ratio'). Default (cleaned-telonex dollar optima): "
+                         f"'ratio'). Default: "
                          f"{','.join(f'{k}={v}' for k,v in DEFAULT_THRESHOLDS.items())}")
+    ap.add_argument("--side", type=str, default=DEFAULT_SIDE,
+                    choices=["yes", "no", "both"],
+                    help=f"Which token side(s) of each --thresholds type to "
+                         f"consider for firing: 'yes' (slots 0..11), 'no' "
+                         f"(slots 12..23), or 'both'. Default {DEFAULT_SIDE!r} "
+                         f"(per edge_threshold_sweep_yesno: NO-buy is the only "
+                         f"side with robust positive edge).")
     ap.add_argument("--time-seconds", type=int, default=DEFAULT_T_OFFSET_S,
                     help=f"Fire offset relative to game_start (default {DEFAULT_T_OFFSET_S})")
     ap.add_argument("--model", type=str, default=str(DEFAULT_MODEL),
