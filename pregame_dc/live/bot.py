@@ -8,7 +8,8 @@ At t = game_start + --time-seconds (default -10min), the bot:
      model (pregame_dc.models.dixon_coles), loaded from a saved .npz
      produced by `python -m pregame_dc.live.fit_save_dc`.
   3. For each candidate slot selected by --thresholds × --side (default:
-     spread NO-buy tokens, slots 15/16/17/18) where 0.01 <= ask <= 0.99 AND
+     spread NO-buy slots 15/16/17/18 at edge>0, plus totals NO-buy slots
+     19/20/21/22 at edge>0.02) where 0.01 <= ask <= 0.99 AND
      the firing rule clears the per-type threshold, places a FOK buy of
      size = max(5, ceil(1.00 / price)), price = ceil(ask*100)/100. The
      firing rule is either edge (pred - ask) or ratio
@@ -143,11 +144,14 @@ ASK_LO, ASK_HI = 0.01, 0.99
 SPREAD_FLOOR = 0.005          # floor for book_spread when computing ratio
 DEFAULT_RULE = "edge"         # "edge" → fire when edge > thr; "ratio" → fire when edge/book_spread > thr
 # Per-market-type firing thresholds (units match --rule). Default reflects the
-# per-(type, side) findings of `pregame_dc.analyze.edge_threshold_sweep_yesno`:
-# only the NO-buy side carries robust positive edge across the cleaned-telonex
-# dataset, and spread/no shows the strongest signal (t≈+4.5 at thr=0). YES-buy
-# sides have no positive edge for any type — see --side default below.
-DEFAULT_THRESHOLDS = {"spread": 0.0}
+# per-(type, side) findings of `pregame_dc.analyze.edge_threshold_sweep_yesno`
+# and the live-fire backtest (`pregame_dc.analyze.live_edge_threshold_sweep`):
+# only the NO-buy side carries robust positive edge. Spread/no is the strongest
+# signal in cleaned-telonex (t≈+4.5 at thr=0); totals/no carries a robust
+# positive edge on the live fires that strengthens with a small positive
+# threshold (t>2 around 0.005–0.02, under both baked and on-disk-model preds).
+# YES-buy sides have no positive edge for any type — see --side default below.
+DEFAULT_THRESHOLDS = {"spread": 0.0, "totals": 0.02}
 DEFAULT_SIDE = "no"           # "yes" | "no" | "both" — which token side(s) to fire on
 DEFAULT_T_OFFSET_S = -600           # -10 min
 DEFAULT_BUDGET = 20.0
